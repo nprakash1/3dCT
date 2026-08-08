@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Project data & cached tensors (large / regenerable)
+data/
+cache/
+
+# Secrets / tokens (never commit)
+.env
+.env.*
+*.token
+hf_token*
+
+# OS / editor
+.DS_Store
+
+.idea/
+.vscode/

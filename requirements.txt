@@ -1,0 +1,9 @@
+# Core: MERLIN VLM (pulls in torch, monai, transformers, etc.)
+merlin-vlm
+
+# Explicit helpers we use in the inspection scripts
+torch
+numpy
+pandas
+nibabel
+rich

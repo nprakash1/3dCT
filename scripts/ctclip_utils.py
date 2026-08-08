@@ -180,7 +180,11 @@ class CTCLIPEmbedder:
     def embed_image_tensor(self, vol: torch.Tensor, normalize: bool = True) -> torch.Tensor:
         """vol: (1,1,D,H,W) -> (1,512)."""
         vol = vol.to(self.device)
+        # CTViT returns encoded tokens of shape (b, h, w, z, c) = (1,24,24,24,512).
+        # CT-CLIP's forward reduces this with mean over dim=1, THEN flattens to
+        # (b, 24*24*512 = 294912) before to_visual_latent (see ct_clip.py L719-740).
         tokens = self.clip.visual_transformer(vol, return_encoded_tokens=True)
+        tokens = torch.mean(tokens, dim=1)                  # (1, 24, 24, 512)
         feat = tokens.reshape(tokens.shape[0], -1)          # flatten -> (1, 294912)
         latent = self.clip.to_visual_latent(feat)           # -> (1, 512)
         out = latent.detach().cpu().float()

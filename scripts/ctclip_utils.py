@@ -116,7 +116,7 @@ class CTCLIPEmbedder:
     """
 
     def __init__(self, weights_path: str, device: Optional[str] = None):
-        from transformers import AutoModel, AutoTokenizer
+        from transformers import BertModel, BertTokenizer
         try:
             from ct_clip import CTCLIP           # from CT_CLIP package
             from transformer_maskgit import CTViT
@@ -130,9 +130,11 @@ class CTCLIPEmbedder:
 
         self.device = device or get_device()
 
-        # text tower (CXR-BERT) -- trust_remote_code needed for this model
-        self.tokenizer = AutoTokenizer.from_pretrained(TEXT_MODEL_ID, trust_remote_code=True)
-        text_encoder = AutoModel.from_pretrained(TEXT_MODEL_ID, trust_remote_code=True)
+        # text tower: CT-CLIP uses a PLAIN transformers BertModel over the CXR-BERT
+        # weights (NOT the custom CXRBert class, which nests params under `.bert`
+        # and breaks the checkpoint key names).
+        self.tokenizer = BertTokenizer.from_pretrained(TEXT_MODEL_ID, do_lower_case=True)
+        text_encoder = BertModel.from_pretrained(TEXT_MODEL_ID)
 
         # image tower (CTViT) -- exact config from run_zero_shot.py
         image_encoder = CTViT(
@@ -148,8 +150,27 @@ class CTCLIPEmbedder:
             extra_latent_projection=False, use_mlm=False,
             downsample_image_embeds=False, use_all_token_embeds=False,
         )
-        # load pretrained weights
-        self.clip.load(weights_path)
+        # load pretrained weights tolerantly: newer transformers drops the
+        # `embeddings.position_ids` buffer, so strict=True would fail on that one
+        # benign key. We load strict=False and assert nothing important is missing.
+        sd = torch.load(weights_path, map_location="cpu")
+        if isinstance(sd, dict) and "model" in sd and "state_dict" not in sd \
+                and all(isinstance(v, dict) for v in [sd.get("model", {})]):
+            sd = sd["model"]
+        missing, unexpected = self.clip.load_state_dict(sd, strict=False)
+        benign = {"text_transformer.embeddings.position_ids"}
+        real_missing = [k for k in missing]
+        real_unexpected = [k for k in unexpected if k not in benign]
+        if real_missing or real_unexpected:
+            print(f"[CTCLIPEmbedder] load_state_dict mismatches "
+                  f"(missing={len(real_missing)}, unexpected={len(real_unexpected)})")
+            if real_missing:
+                print("  missing[:5]   :", real_missing[:5])
+            if real_unexpected:
+                print("  unexpected[:5]:", real_unexpected[:5])
+        else:
+            print("[CTCLIPEmbedder] weights loaded cleanly "
+                  f"(ignored benign: {sorted(benign & set(unexpected))})")
         self.clip.eval().to(self.device)
         for p in self.clip.parameters():
             p.requires_grad_(False)

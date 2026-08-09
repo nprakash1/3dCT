@@ -52,8 +52,23 @@ multi-GPU job into a single-GPU afternoon.
 
 **Pairs → examples.** We use CT-RATE prior→current pairs (`data/ctrate/subset_pairs.csv`,
 patient-grouped `train/val/test`). Each pair is silver-labeled by MedGemma-27B
-(`medgemma_labels_v3.jsonl`). A pair contributes **one example per explicit finding**, so
-~600 pairs expand to ~5,000 `(pair, finding)` examples:
+(`medgemma_labels_v3.jsonl`). A pair contributes **one example per explicit finding**, so the
+pairs expand into thousands of `(pair, finding)` examples.
+
+**Exact pair counts (from `subset_pairs.csv`):**
+
+| | pairs | patients |
+|---|---:|---:|
+| train | **420** | 357 |
+| val   | **90**  | 81 |
+| test  | **90**  | 80 |
+| **total** | **600** | **518** |
+
+600 unique `(patient, prior, current)` pairs, drawn from **1,147 unique CT volumes** across
+**518 patients** (volumes < 2×pairs because a scan can serve as the prior in one pair and the
+current in another; patients < pairs because some patients contribute multiple pairs). The
+per-finding expansion of these pairs:
+
 
 | split | examples | worsened | stable | improved |
 |------|---------:|--------:|------:|--------:|

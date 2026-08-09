@@ -96,6 +96,50 @@ one-pass mining already averages 1.56 pairs/patient, so full combos add only a m
 bringing in external longitudinal CT (RadThinking, DeepLesion/DLS, NLST), which also diversifies
 domain/vendor.
 
+**⚠️ Pretraining-exposure / leakage (important — read before quoting numbers).** The volume IDs in
+`subset_pairs.csv` are CT-RATE identifiers with a **source-split prefix**: `train_*` (CT-RATE
+*training* split) and `valid_*` (CT-RATE *validation* split) — e.g. `train_5200_a_1.nii.gz` and
+`valid_168_a_1.nii.gz`. Two facts matter:
+
+1. **CT-CLIP (the frozen encoder) was pretrained on the CT-RATE *training* split.** So every
+   `train_*` volume in your pairs was **seen by the image encoder during its contrastive
+   pretraining**. Since the pairs are overwhelmingly `train_*`, the encoder has effectively
+   "seen" the images in your **train, val, AND test** splits already.
+2. **Our train/val/test split ignores CT-RATE's split.** The greedy selection assigned pairs to
+   our splits by finding-balance, not by CT-RATE provenance — so a CT-RATE *validation* pair like
+   `valid_168` was placed into **our `train`** split (line 12 of the CSV). CT-RATE membership and
+   our-split membership are unrelated.
+
+**What this does and does not invalidate.**
+- It is **not** train/test leakage *of the temporal task*: the **progression labels** and the
+  **difference module** never saw the test pairs during *our* training, and our split is
+  patient-grouped, so no patient's findings cross our splits. The 0.530 macro-F1 is a valid
+  estimate of the **adapter's** ability to read change *given this frozen backbone*.
+- It **is** foundation-model **pretraining exposure**: because the backbone saw these exact
+  volumes (self-supervised / report-contrastive, not with progression labels), the *image
+  features* on our test set are **optimistically clean** relative to truly novel scans. A frozen
+  encoder that memorized a volume's embedding gives the adapter an easier signal than it would get
+  on an unseen hospital's CT. So the absolute number may **not transfer** to external data.
+
+**Answer to "were the 600 all from the CT-RATE training set?"** Almost all are CT-RATE `train_*`
+(pretraining-seen), with a minority of `valid_*`; and those were distributed across *our*
+train/val/test without regard to CT-RATE's split — so **your test set is mostly volumes the
+encoder was pretrained on.** That's exactly the situation to flag.
+
+**If you download CT-RATE and evaluate on it, this is why it could look "too good."** To get a
+defensible number, do **one** of:
+- **Encoder-held-out split:** restrict the *test* set to CT-RATE `valid_*` pairs only (volumes the
+  encoder did **not** train on), keep `train_*` for train/val. This isolates true generalization
+  of the frozen features.
+- **External test:** evaluate on RadThinking / DeepLesion / an institutional set the encoder never
+  saw. This is the gold standard and the strongest claim for a paper.
+- At minimum, **report the CT-RATE-split composition of each of your splits** and add a
+  `seen/unseen` stratification of test macro-F1 so reviewers can see the exposure.
+
+(Exact `train_*` vs `valid_*` counts per split: run
+`awk -F, 'NR>1{p=$3; sub(/_.*/,"",p); c[$5"|"p]++} END{for(k in c) print k, c[k]}' data/ctrate/subset_pairs.csv`.)
+
+
 
 **Critical subtlety (effective diversity).** The module produces **one `d` per pair**; all of a
 pair's ~8 findings share that `d`. So the *image side* only ever sees ~**420 distinct pairs**,

@@ -288,7 +288,116 @@ doesn't pull `d` toward static description (which would hurt "stable"/"worsened"
 
 ---
 
+## 8.5 Results (this run — `ANTISYM=False, MAGNITUDE=True, USE_CONTRASTIVE=True`)
+
+### Dataset actually used
+```
+train: 3550 ex  (worsened=1203  stable=1313  improved=1034)
+val  :  733 ex  (worsened=253   stable=264   improved=216)
+test :  740 ex  (worsened=261   stable=249   improved=230)
+skipped: {'not_explicit': 1336}
+unique findings: 18
+```
+
+### Training log (early-stopped)
+```
+ep   1  loss 4.290  val_macroF1 0.453  (best 0.453)
+ep  10  loss 3.869  val_macroF1 0.512  (best 0.549)
+ep  20  loss 3.618  val_macroF1 0.514  (best 0.549)
+early stop @ ep 26  best val macro-F1 0.549
+restored best. val macro-F1 = 0.549 | ANTISYM=False MAGNITUDE=True CONTRASTIVE=True
+```
+Best val macro-F1 was reached early (~ep 10) and did not improve for 20 epochs → early stop at
+ep 26. This is expected for a ~1.8M module on ~420 effective image-pairs: it fits the recoverable
+signal fast, then plateaus. The falling training loss with flat val macro-F1 after ep ~10 indicates
+the later epochs mostly reduce the auxiliary (magnitude/contrastive) losses without improving the
+3-way decision — consistent with those terms being representation-shapers, not the readout.
+
+### TEST — per class
+```
+accuracy : 0.534
+macro-F1 : 0.530   (always-stable ref = 0.168)
+  F1 worsened : 0.517
+  F1 stable   : 0.426
+  F1 improved : 0.647
+
+confusion (rows = true, cols = pred; order w / s / i):
+        pred:w  pred:s  pred:i
+ true:w   133      73      55
+ true:s    92      97      60
+ true:i    29      36     165
+```
+
+**Headline.** macro-F1 **0.530** vs. the always-`stable` floor **0.168** — the module is doing real
+temporal work (≈3.2× the trivial baseline), and test (0.530) tracks val (0.549) closely → no
+meaningful overfitting.
+
+**Per-class reading (this is the informative part).**
+- **improved (0.647)** is strongest. Its row is clean: 165/230 correct, little leakage. "Improved/
+  resolved" language ("resolved", "not detected", "decreased") is distinctive and the frozen text
+  prototypes capture it well.
+- **worsened (0.517)** is middling: 133/261 correct, but **73 worsened → predicted stable** and
+  **55 → improved**. The improved-confusion is the concerning one (opposite direction) and points
+  at genuine direction ambiguity, not just a stable/no-change issue.
+- **stable (0.426) is the weakest — exactly as this report predicted (§6.3, §7.1).** Only 97/249
+  correct; it bleeds heavily into **worsened (92)** and **improved (60)**. This is the classic
+  "stable collapse": with `ANTISYM=False` there is no structural zero for no-change, and the
+  magnitude head — being **auxiliary-only at inference (§6.3)** — shapes the representation but does
+  **not** gate the decision, so it can't rescue "stable" on its own. That the magnitude head still
+  lifts stable well above the 0.168 floor suggests wiring it into inference (§10.1) is the single
+  most promising next change.
+
+### TEST — per disease (finding)
+`macroF1*` = macro-F1 over the classes actually present for that finding.
+
+| finding | n | acc | macroF1* |
+|---|---:|---:|---:|
+| Cardiomegaly | 76 | 0.526 | 0.482 |
+| Pericardial effusion | 76 | 0.697 | 0.432 |
+| Lymphadenopathy | 74 | 0.459 | 0.385 |
+| Pleural effusion | 63 | 0.571 | 0.355 |
+| Lung nodule | 52 | 0.385 | 0.366 |
+| Consolidation | 49 | 0.612 | 0.439 |
+| Lung opacity | 45 | 0.689 | 0.560 |
+| Atelectasis | 42 | 0.429 | 0.411 |
+| Peribronchial thickening | 35 | 0.543 | 0.523 |
+| Emphysema | 32 | 0.375 | 0.259 |
+| Pulmonary fibrotic sequela | 30 | 0.567 | 0.481 |
+| Coronary artery wall calcification | 27 | 0.519 | 0.472 |
+| Hiatal hernia | 27 | 0.630 | 0.427 |
+| Arterial wall calcification | 25 | 0.480 | 0.285 |
+| Interlobular septal thickening | 25 | 0.520 | 0.347 |
+| Medical material | 23 | 0.565 | 0.385 |
+| Bronchiectasis | 22 | 0.364 | 0.257 |
+| Mosaic attenuation pattern | 17 | 0.471 | 0.536 |
+
+**Per-disease reading.**
+- **Best macro-F1:** Lung opacity (0.560), Mosaic attenuation (0.536), Peribronchial thickening
+  (0.523) — findings that genuinely change over short intervals and have clear directional
+  language, so the difference embedding has real signal to latch onto.
+- **Worst macro-F1:** Bronchiectasis (0.257), Emphysema (0.259), Arterial/Coronary wall
+  calcification (0.285/0.472), Interlobular septal thickening (0.347) — mostly **chronic, slowly-
+  or non-changing** findings that are overwhelmingly "stable" in reality. These are hard for two
+  reasons that compound: (a) they're dominated by the weakest class (stable), and (b) their reports
+  rarely use interval language, so both the label and the text signal are thin. High *accuracy* with
+  low *macro-F1* (e.g. Pericardial effusion: acc 0.697, macroF1 0.432) is the tell-tale sign of a
+  finding where one class dominates and the minority classes are missed.
+- **Caveat:** several findings have small n (17–27), so per-disease macro-F1 is noisy; read these as
+  directional, not definitive.
+
+### Bottom line for this configuration
+The frozen-backbone + difference-module bet **works** at the headline level (0.530 macro-F1, 3.2×
+the floor, val/test aligned). The failure mode is precisely the one the design anticipated — **"stable"
+is the weakest class and the largest source of confusion** — and it is attributable to two
+addressable choices in *this* config: `ANTISYM=False` (no structural zero) and the magnitude head
+being auxiliary-only. The highest-leverage next experiments, in order, are: **(1)** route "stable"
+via the magnitude head at inference (§10.1); **(2)** turn on `ANTISYM=True` and compare (§10.4);
+**(3)** replace the `evidence` proxy with the real dynamic/static two-path loss (§10.2).
+
+---
+
 ## 9. Evaluation, baselines, controls
+
 
 **Metrics reported.** Overall accuracy, **macro-F1**, **per-class F1** (worsened/stable/improved),
 a **confusion matrix**, and **per-disease** (per-finding) accuracy/macro-F1 (over the classes

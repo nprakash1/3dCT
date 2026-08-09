@@ -78,6 +78,25 @@ per-finding expansion of these pairs:
 
 (`not_explicit` findings — 1,336 — are skipped; **18** unique findings.)
 
+**Data headroom (how many more pairs you can get).** The 600 pairs are a *curated subset*
+(`scripts/18_select_subset.py`, greedy finding-balancing) of a much larger labeled pool:
+
+| tier | pairs | patients | cost to use |
+|---|---:|---:|---|
+| **currently used** | 600 | 518 | — |
+| **already labeled & usable** (`medgemma_labels_v3.jsonl`, parse_ok + ≥1 explicit finding) | **4,255** | ~2,800 | just cache image features; **no new LLM** |
+| **full mined CT-RATE pool** (`ctrate_pairs_enriched.csv`) | **4,385** | 2,806 | + label the ~130 leftover |
+
+You can **~7× the data immediately** — 600 → **4,255** pairs (**+3,655**) with *zero* new labeling;
+the only cost is running the frozen CT-CLIP feature-cache over the extra volumes. That lifts the
+training set from **420 → ~3,000 distinct pairs**, directly attacking the effective-diversity
+ceiling flagged below (the image side currently sees only 420). Beyond 4,385, more pairs require
+either enumerating *all* intra-patient scan combinations (CT-RATE has ~2,806 repeat-scan patients;
+one-pass mining already averages 1.56 pairs/patient, so full combos add only a modest amount) or
+bringing in external longitudinal CT (RadThinking, DeepLesion/DLS, NLST), which also diversifies
+domain/vendor.
+
+
 **Critical subtlety (effective diversity).** The module produces **one `d` per pair**; all of a
 pair's ~8 findings share that `d`. So the *image side* only ever sees ~**420 distinct pairs**,
 while the *classifier* sees ~3,550 labels. Overfitting on anything touching the image

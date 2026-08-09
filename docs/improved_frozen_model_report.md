@@ -385,7 +385,52 @@ meaningful overfitting.
 - **Caveat:** several findings have small n (17–27), so per-disease macro-F1 is noisy; read these as
   directional, not definitive.
 
+### What `evidence` was actually used in the contrastive term (this run)
+The contrastive loss (`USE_CONTRASTIVE=True`) used, as each example's positive, the **per-finding
+`evidence` string** from `medgemma_labels_v3.jsonl` — a MedGemma-selected quote from the *current*
+report (§6.4). Measured over the explicit findings actually fed to training:
+
+```
+explicit findings (3-class):                    22,222
+  with non-empty evidence (used as positives):  22,218  (100.0%)  # keep-mask drops only 4
+  unique evidence strings:                       10,331
+  evidence length (words):                       median 8, mean 8.6, max 31
+  non-empty by direction:  worsened 7,007 | improved 8,671 | stable 6,540
+```
+
+**These positives are frequently NOT direction-bearing.** Real examples used verbatim:
+- `worsened` ← *"Central venous catheter is seen on the right."*  (no worsening expressed)
+- `improved` ← *"Heart contour and size are normal."*  (no comparison at all)
+- `stable`   ← *"heart contour, size are normal"*
+
+**Quantified ambiguity — the key problem.** Because `evidence` describes the current state rather
+than the change, the *same* sentence is often reused as the positive for *different* directions:
+
+```
+unique evidence strings mapped to >1 direction:  451 (4.4% of unique)
+finding-instances whose evidence is direction-ambiguous: 9,507 / 22,218  (42.8%)
+```
+Top collisions (same text, opposite/overlapping labels):
+
+| evidence text (lower-cased) | used for |
+|---|---|
+| "heart contour, size are normal" | stable 403, **improved 415** |
+| "pericardial effusion-thickening was not observed" | **improved 561**, stable 244 |
+| "no pleural or pericardial effusion was detected." | **improved 534**, stable 77 |
+| "heart contour and size are normal." | **improved 436**, stable 161 |
+| "no enlarged lymph nodes ... were detected" | improved 208, stable 233 |
+
+So for **~43% of training examples** the contrastive target is a sentence that also serves as the
+positive for a *different* direction. That means InfoNCE(`d`, `evidence`) **cannot** teach direction
+on those examples — at best it teaches finding identity/current-state, and at worst it pulls
+`worsened`/`improved`/`stable` embeddings that share identical evidence text *toward each other*.
+This is almost certainly a contributor to the **stable↔change confusion** seen in the per-class
+results, and it is the concrete, measured justification for the §10.2 recommendation to replace the
+`evidence` proxy with the real `dynamic_sentences` (which *do* carry the comparison) plus hard
+negatives.
+
 ### Bottom line for this configuration
+
 The frozen-backbone + difference-module bet **works** at the headline level (0.530 macro-F1, 3.2×
 the floor, val/test aligned). The failure mode is precisely the one the design anticipated — **"stable"
 is the weakest class and the largest source of confusion** — and it is attributable to two

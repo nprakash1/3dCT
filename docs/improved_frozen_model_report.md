@@ -139,6 +139,22 @@ defensible number, do **one** of:
 (Exact `train_*` vs `valid_*` counts per split: run
 `awk -F, 'NR>1{p=$3; sub(/_.*/,"",p); c[$5"|"p]++} END{for(k in c) print k, c[k]}' data/ctrate/subset_pairs.csv`.)
 
+**Size of a clean "encoder-unseen" test (option 1), over the full labeled pool.** Of the 4,378
+parse-ok labeled pairs, the CT-RATE source split of the current volume is **4,119 `train_*`** vs
+**259 `valid_*`**. So if you train/val on `train_*` and use **only `valid_*` as test**:
+
+| encoder-unseen TEST = CT-RATE `valid_*` | count |
+|---|---:|
+| pairs (total) | **259** |
+| pairs usable (≥1 explicit finding) | **251** |
+| `(pair, finding)` **examples** | **1,288** |
+| &nbsp;&nbsp;by direction | improved 495 · stable 382 · worsened 411 |
+
+That's a **larger and cleaner** test than your current 90-pair / 740-example test, at zero labeling
+cost — you'd train on ~4,119 encoder-seen pairs and evaluate on 251 encoder-unseen pairs
+(script: `scripts/_count_valid_test.py`).
+
+
 
 
 **Critical subtlety (effective diversity).** The module produces **one `d` per pair**; all of a

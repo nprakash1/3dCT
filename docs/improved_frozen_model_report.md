@@ -533,6 +533,80 @@ being auxiliary-only. The highest-leverage next experiments, in order, are: **(1
 via the magnitude head at inference (§10.1); **(2)** turn on `ANTISYM=True` and compare (§10.4);
 **(3)** replace the `evidence` proxy with the real dynamic/static two-path loss (§10.2).
 
+> **See §8.6** for a multi-seed loss ablation (magnitude × contrastive × target) that quantifies
+> each term's marginal contribution and shows that plain CE is the strongest config on this subset.
+
+---
+
+## 8.6 Loss ablation — magnitude × contrastive × target (seeds=3)
+
+**Dataset (labels used, this subset):**
+
+TRAIN — 420 pairs, 3,550 examples
+
+| class | count | share |
+|---|---:|---:|
+| worsened | 1,203 | 33.9% |
+| stable | 1,313 | 37.0% |
+| improved | 1,034 | 29.1% |
+
+TEST — 90 pairs, 740 examples
+
+| class | count | share |
+|---|---:|---:|
+| worsened | 261 | 35.3% |
+| stable | 249 | 33.6% |
+| improved | 230 | 31.1% |
+
+(VAL: 90 pairs, 733 ex; worsened 253 / stable 264 / improved 216.)
+
+**Ablation (test macro-F1, mean±std over 3 seeds; 6 unique configs — `con=off` collapses the two
+`tgt` rows into one, since the target is unused when contrastive is off):**
+
+| config | macroF1 | F1_worse | F1_stable | F1_improved |
+|---|---|---|---|---|
+| mag=off · con=off (baseline) | **0.536**±0.014 | 0.506±0.009 | 0.459±0.027 | 0.644±0.018 |
+| mag=on · con=off | 0.527±0.010 | 0.478±0.027 | 0.469±0.025 | 0.635±0.015 |
+| mag=off · con=on · evidence | 0.528±0.008 | 0.508±0.021 | 0.471±0.033 | 0.605±0.046 |
+| mag=on · con=on · evidence | 0.531±0.008 | 0.524±0.022 | 0.444±0.017 | 0.625±0.019 |
+| mag=off · con=on · **dynamic** | 0.496±0.005 | 0.515±0.008 | **0.389**±0.019 | 0.583±0.029 |
+| mag=on · con=on · **dynamic** | 0.491±0.018 | 0.465±0.034 | 0.422±0.019 | 0.587±0.014 |
+
+always-stable floor = 0.168 · epochs=120 · patience=20
+
+**Why the macro-F1s land where they do**
+
+- **Plain CE is best (0.536).** On this small (~420 distinct pairs), low-diversity, encoder-seen
+  subset, neither auxiliary earns its place; every config sits ~3× the 0.168 floor, so the module
+  works, but the aux terms only *redistribute* errors rather than reduce them.
+- **Magnitude ≈ neutral (−0.009), and shifts errors toward stable** (F1_stable 0.459→0.469,
+  F1_worse 0.506→0.478). Exactly the §6.3 story: it shapes `d` to encode "how much changed" (nudges
+  stable up) but is not a decision gate at inference, and slightly muddies worse/improved.
+- **Contrastive + evidence ≈ neutral (0.528 / 0.531).** The §8.5 measurement explains it: 42.8% of
+  `evidence` strings are direction-ambiguous, so the term mostly teaches *finding identity* — a weak
+  gradient that neither helps nor much hurts the 3-way direction axis.
+- **Contrastive + dynamic hurts most (−0.040), specifically tanking stable (0.459→0.389).** Dynamic
+  (comparison) sentences exist almost only for *changed* pairs; stable pairs have empty dynamic text
+  and are dropped by the `norm>0` keep-mask. So this term trains `d` on change-only examples,
+  pulling it out of the near-zero "no-change" region → stable collapses. It is compounded by
+  (a) **objective conflict** on the single shared `d` (cosine-vs-prototype wants different geometry
+  than sentence alignment), (b) the **shared `logit_scale` temperature** being tugged by both the
+  classifier and the InfoNCE loss, and (c) **false negatives** from templated "no significant
+  interval change" text.
+- **Why dynamic is worse than evidence despite being the "more correct" signal:** evidence is
+  near-neutral noise (ambiguous ⇒ weak pull), whereas dynamic is a *strong, coherent* signal that
+  actively reshapes `d` toward change-direction geometry that conflicts with the per-finding cosine
+  classifier and abandons stable. A strong wrong-for-this-head signal does more damage than a weak
+  one.
+- **Caveat:** this is the encoder-**seen** 600-pair subset; the sign and size of these deltas may
+  change under the encoder-unseen `valid_*` redesign (§2) and with more training pairs.
+
+**Actionable read.** The ablation is consistent with §10: the contrastive path needs (1) the real
+dynamic/static **two-path** objective with stable pairs *kept* (given an explicit "no interval
+change" positive rather than dropped), (2) a **separate contrastive temperature** instead of reusing
+`logit_scale`, and (3) a much smaller `LAMBDA_CON` (or warmup) so the aux term cannot dominate CE.
+Until then, **plain CE is the model to report** on this subset.
+
 ---
 
 ## 9. Evaluation, baselines, controls

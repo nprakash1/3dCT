@@ -24,8 +24,12 @@ prompt_text = "".join(nb["cells"][5]["source"])
 assert "TEMPORAL_CUE" not in all_text and "UP_CUE" not in all_text and "DOWN_CUE" not in all_text
 assert "import re" not in prompt_text
 assert "truncation=False" in all_text and "truncation=True" not in all_text
+assert "add_special_tokens=True" in all_text
 assert "medgemma_labels_v6.jsonl" in all_text and "LIMIT=50" in all_text
 assert "prior_text(row)" in all_text and "structured_transitions(row)" in all_text
+assert "batch_reached_max_new_tokens" in all_text
+assert "cap_parse_fail==0" in all_text
+assert "rec['raw']=raw" in all_text and "raw[:" not in "".join(nb["cells"][7]["source"])
 
 namespace = {}
 exec(prompt_text, namespace)
@@ -138,4 +142,5 @@ item = finding(output, "Pleural effusion")
 assert item["direction"] == "unknown" and item["rejection_reason"] == "sentence_not_verbatim"
 
 print("PASS: valid JSON; 11 cells; all code compiles; no semantic regex; no truncation;")
+print("PASS: exact context check, generation-cap diagnostic, and full failed output preservation")
 print("PASS: prompt has prior/current + structured transitions; all 8 behavior tests pass")

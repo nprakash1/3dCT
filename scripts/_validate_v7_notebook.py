@@ -25,8 +25,8 @@ assert "TEMPORAL_CUE" not in all_text and "UP_CUE" not in all_text and "DOWN_CUE
 assert "import re" not in prompt_text
 assert "truncation=False" in all_text and "truncation=True" not in all_text
 assert "add_special_tokens=True" in all_text
-assert "medgemma_labels_v6.jsonl" in all_text and "LIMIT=50" in all_text
-assert "prior_text(row)" in all_text and "structured_transitions(row)" in all_text
+assert "medgemma_labels_v7.jsonl" in all_text and "LIMIT=50" in all_text
+assert "structured_transitions(row)" in all_text  # postprocessing fallback still exists
 assert "batch_reached_max_new_tokens" in all_text
 assert "cap_parse_fail==0" in all_text
 assert "rec['raw']=raw" in all_text and "raw[:" not in "".join(nb["cells"][7]["source"])
@@ -35,6 +35,22 @@ namespace = {}
 exec(prompt_text, namespace)
 canon = namespace["CANON"]
 combine = namespace["combine"]
+
+# The LLM prompt must include current text but hide prior text and structured transitions.
+probe = {
+    "prior_findings": "SECRET PRIOR REPORT CONTENT",
+    "prior_impression": "SECRET PRIOR IMPRESSION",
+    "curr_findings": "VISIBLE CURRENT REPORT CONTENT",
+    "curr_impression": "VISIBLE CURRENT IMPRESSION",
+    "presence_changes": json.dumps({"Pleural effusion": "new"}),
+    "delta_days": "30",
+}
+rendered_prompt = namespace["build_user"](probe)
+assert "VISIBLE CURRENT REPORT CONTENT" in rendered_prompt
+assert "SECRET PRIOR REPORT CONTENT" not in rendered_prompt
+assert "SECRET PRIOR IMPRESSION" not in rendered_prompt
+assert '"Pleural effusion": "new"' not in rendered_prompt
+assert "STRUCTURED TRANSITIONS" not in rendered_prompt
 
 
 def make_row(presence, current=""):
@@ -143,4 +159,5 @@ assert item["direction"] == "unknown" and item["rejection_reason"] == "sentence_
 
 print("PASS: valid JSON; 11 cells; all code compiles; no semantic regex; no truncation;")
 print("PASS: exact context check, generation-cap diagnostic, and full failed output preservation")
-print("PASS: prompt has prior/current + structured transitions; all 8 behavior tests pass")
+print("PASS: LLM prompt contains current report but hides prior/structured signals")
+print("PASS: postprocessing applies structured fallback; all 8 behavior tests pass")

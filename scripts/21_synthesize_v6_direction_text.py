@@ -88,10 +88,12 @@ def convert_record(record: dict) -> dict:
     output = json.loads(json.dumps(record))
     output["derived_label_version"] = "v6_weak_synthetic_direction_v1"
     output["synthetic_direction_seed"] = SEED
+    record_quality_eligible = bool(record.get("parse_ok")) and bool(record.get("schema_ok"))
+    output["record_quality_eligible"] = record_quality_eligible
 
     for finding in output.get("findings", []):
         direction = finding.get("direction")
-        eligible = direction in KNOWN_DIRECTIONS
+        eligible = record_quality_eligible and direction in KNOWN_DIRECTIONS
         finding["progression_eligible"] = eligible
         finding["original_label_source"] = finding.get("label_source")
         finding["original_temporal_sentence_source"] = finding.get("temporal_sentence_source")
@@ -121,6 +123,7 @@ def convert(input_path: Path, output_path: Path) -> dict:
         "template_group": Counter(),
         "template_id": Counter(),
         "findings_per_record": Counter(),
+        "record_quality": Counter(),
     }
     seen_pairs = set()
 
@@ -143,6 +146,7 @@ def convert(input_path: Path, output_path: Path) -> dict:
             stats["parse_ok"] += bool(record.get("parse_ok"))
             stats["schema_ok"] += bool(record.get("schema_ok"))
             stats["findings_per_record"][len(output.get("findings", []))] += 1
+            stats["record_quality"]["eligible" if output["record_quality_eligible"] else "excluded"] += 1
             domain = "train" if str(record.get("prior_volume", "")).startswith("train_") else (
                 "valid" if str(record.get("prior_volume", "")).startswith("valid_") else "other"
             )
@@ -165,11 +169,13 @@ def validate_output(input_path: Path, output_path: Path) -> None:
 
     for original, derived in zip(input_records, output_records):
         assert len(original.get("findings", [])) == len(derived.get("findings", []))
+        expected_record_quality = bool(original.get("parse_ok")) and bool(original.get("schema_ok"))
+        assert derived["record_quality_eligible"] == expected_record_quality
         for before, after in zip(original.get("findings", []), derived.get("findings", [])):
             # Existing source fields must remain exactly unchanged.
             for key, value in before.items():
                 assert after.get(key) == value, (key, value, after.get(key))
-            if after["direction"] in KNOWN_DIRECTIONS:
+            if expected_record_quality and after["direction"] in KNOWN_DIRECTIONS:
                 assert after["progression_eligible"]
                 assert after["training_temporal_sentence"]
                 assert after["training_temporal_sentence_source"] == "synthetic_direction"
@@ -185,6 +191,7 @@ def print_stats(stats: dict, input_path: Path, output_path: Path) -> None:
     print(f"output: {output_path}")
     print(f"records={stats['records']:,} parse_ok={stats['parse_ok']:,} schema_ok={stats['schema_ok']:,}")
     print("findings/record:", dict(stats["findings_per_record"]))
+    print("record quality:", dict(stats["record_quality"]))
     print("direction:", dict(stats["direction"]))
     known = sum(stats["eligible_by_source"].values())
     print(f"progression eligible={known:,}")

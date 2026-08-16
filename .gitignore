@@ -6,6 +6,7 @@ __pycache__/
 # Project data & cached tensors (large / regenerable)
 data/
 cache/
+medgemma_labels_v6*.jsonl
 
 # Secrets / tokens (never commit)
 .env

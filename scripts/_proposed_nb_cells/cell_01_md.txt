@@ -1,0 +1,1 @@
+## 1. Setup: clone CT-CLIP + our repo, install deps

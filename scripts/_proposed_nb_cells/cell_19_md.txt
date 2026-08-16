@@ -1,0 +1,9 @@
+## 10. Train on Hub `train_*` (early-stop on patient-held-out `train_*` tune)
+
+Total loss:
+
+**L = λ_ce L_CE + λ_mag L_mag + λ_con L_con**
+
+- `L_CE` — weighted CE on `cosine(d_f, PROTO[f]) * exp(logit_scale)`
+- `L_mag` — optional BCE(mag, change vs stable)
+- `L_con` — masked same-finding SupCon with temperature `tau_con`

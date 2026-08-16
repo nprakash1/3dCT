@@ -1,0 +1,3 @@
+## 6. Build finding x class text prototypes (`PROTO[finding]`, 3x512, frozen)
+
+Default = template bank (v1). Set `PROTO_SOURCE='real'` to average available evidence/dynamic text per (finding, class) from the **train** split only (falls back to templates if empty).

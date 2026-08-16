@@ -1,0 +1,50 @@
+def build_buckets(split):
+    """Map (fid, y) -> list of dataset indices for contrastive-aware sampling."""
+    y = DATA[split]['y']; fid = DATA[split]['fid']
+    buckets = defaultdict(list)
+    for i in range(len(y)):
+        buckets[(int(fid[i]), int(y[i]))].append(i)
+    return buckets
+
+TRAIN_BUCKETS = build_buckets('train')
+print('train buckets (fid,y) with data:', len(TRAIN_BUCKETS),
+      '| findings present:', len({k[0] for k in TRAIN_BUCKETS}))
+
+def sample_contrastive_batch(buckets, k_findings=K_FINDINGS_PER_BATCH,
+                             n_per_class=N_PER_CLASS, max_bs=MAX_BATCH_SIZE, rng=None):
+    rng = rng or random
+    by_f = defaultdict(set)
+    for (f, y), idxs in buckets.items():
+        if idxs:
+            by_f[f].add(y)
+    eligible = [f for f, ys in by_f.items() if len(ys) >= 2]
+    if not eligible:
+        eligible = list(by_f.keys())
+    if not eligible:
+        return []
+    k = min(k_findings, len(eligible))
+    chosen_f = rng.sample(eligible, k)
+    batch = []
+    for f in chosen_f:
+        for y in range(3):
+            pool = buckets.get((f, y), [])
+            if not pool:
+                continue
+            take = min(n_per_class, len(pool))
+            batch.extend(rng.sample(pool, take) if len(pool) >= take else list(pool))
+    if not batch:
+        return []
+    if len(batch) > max_bs:
+        batch = rng.sample(batch, max_bs)
+    rng.shuffle(batch)
+    return batch
+
+def steps_per_epoch(n, approx_bs):
+    return max(1, math.ceil(n / max(approx_bs, 1)))
+
+_bs_probe = [len(sample_contrastive_batch(TRAIN_BUCKETS)) for _ in range(20)]
+print('probe batch sizes: min/mean/max =', min(_bs_probe),
+      round(sum(_bs_probe)/len(_bs_probe), 1), max(_bs_probe))
+APPROX_BS = max(int(sum(_bs_probe)/len(_bs_probe)), 32)
+STEPS = steps_per_epoch(len(DATA['train']['y']), APPROX_BS)
+print('steps/epoch ~', STEPS, '| approx_bs ~', APPROX_BS)

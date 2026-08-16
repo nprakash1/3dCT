@@ -1,0 +1,13 @@
+_, macro, y, pred = evaluate('test')
+percls = f1_score(y, pred, labels=[0, 1, 2], average=None, zero_division=0)
+acc = (y == pred).mean()
+maj = Counter(DATA['train']['y'].tolist()).most_common(1)[0][0]
+maj_macro = f1_score(y, np.full_like(y, maj), labels=[0, 1, 2], average='macro', zero_division=0)
+assert all(e['hub_domain'] == 'hub_valid' for e in examples['test'])
+print('=== FINAL HUB-VALIDATION TEST — per class ===')
+print(f'accuracy : {acc:.3f}')
+print(f'macro-F1 : {macro:.3f}   (always-{CLASSES[maj]} ref = {maj_macro:.3f})')
+for i, c in enumerate(CLASSES):
+    print(f'  F1 {c:9}: {percls[i]:.3f}')
+print('\nconfusion (rows=true, cols=pred; order w/s/i):')
+print(confusion_matrix(y, pred, labels=[0, 1, 2]))

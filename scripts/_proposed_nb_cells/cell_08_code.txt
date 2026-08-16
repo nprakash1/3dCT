@@ -1,0 +1,9 @@
+from huggingface_hub import login, hf_hub_download
+from ctclip_utils import CTCLIPEmbedder, REPO_ID, CTCLIP_WEIGHTS_HF
+login()  # paste READ token if weights not already on Drive
+os.makedirs(WEIGHTS, exist_ok=True)
+wp = f'{WEIGHTS}/{os.path.basename(CTCLIP_WEIGHTS_HF)}'
+if not os.path.exists(wp):
+    wp = hf_hub_download(REPO_ID, CTCLIP_WEIGHTS_HF, repo_type='dataset', local_dir=WEIGHTS)
+emb = CTCLIPEmbedder(wp)
+print('CT-CLIP text tower ready on', emb.device)

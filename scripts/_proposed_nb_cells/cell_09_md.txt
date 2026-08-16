@@ -1,0 +1,5 @@
+## 5. Labels + strict Hub train / Hub validation separation
+
+- Rows are `(pair, finding, y)` with `y in {worsened, stable, improved}`.
+- Prefer tier=`explicit` (report_explicit).
+- `train_*` -> train / tune (patient SHA partition). `valid_*` -> final test only.

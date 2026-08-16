@@ -1,0 +1,1 @@
+## 3. Load cached CT-CLIP IMAGE embeddings (512-d per volume)

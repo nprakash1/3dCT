@@ -1,0 +1,5 @@
+## 11. FINAL TEST — CT-RATE Hub `valid_*` only
+
+Run **once** after architecture / hyperparameters are fixed. Do not tune from these numbers.
+
+Inference: `d_f = g(v_p, v_c, f)` -> `argmax cos(d_f, PROTO[f])` — **no report text**.

@@ -1,0 +1,107 @@
+def vkey(v): return v.replace('.nii.gz', '').replace('.nii', '')
+
+def volume_domain(v):
+    k = vkey(v).lower()
+    if k.startswith('train_'): return 'hub_train'
+    if k.startswith('valid_'): return 'hub_valid'
+    return 'unknown'
+
+def pair_domain(pv, cv):
+    a, b = volume_domain(pv), volume_domain(cv)
+    return a if a == b else 'cross_domain'
+
+def dev_partition(patient):
+    raw = f'{SPLIT_SEED}|{patient}'.encode('utf-8')
+    u = int.from_bytes(hashlib.sha256(raw).digest()[:8], 'big') / 2**64
+    return 'tune' if u < TUNE_FRAC else 'train'
+
+recs = {}
+for line in open(LAB, encoding='utf-8'):
+    if not line.strip(): continue
+    x = json.loads(line)
+    recs[(x['patient'], x['prior_volume'], x['curr_volume'])] = x
+
+# optional real temporal / dynamic sentences (per pair)
+dyn_of = {}
+try:
+    for line in open(LAB_DS, encoding='utf-8'):
+        if not line.strip(): continue
+        x = json.loads(line)
+        ds = x.get('dynamic_sentences') or []
+        if isinstance(ds, list): ds = ' '.join(s for s in ds if isinstance(s, str))
+        dyn_of[(x['patient'], x['prior_volume'], x['curr_volume'])] = (ds or '').strip()
+    print('loaded dynamic_sentences for', len(dyn_of), 'pairs')
+except FileNotFoundError:
+    print('WARN: dynamic-sentence file not found:', LAB_DS)
+
+pair_ids = {}
+examples = {'train': [], 'tune': [], 'test': []}
+skipped = Counter()
+candidate_pairs = Counter(); usable_pairs = Counter(); missing_hub_valid = []
+for key, rec in recs.items():
+    patient, pv, cv = key
+    domain = pair_domain(pv, cv)
+    if domain == 'hub_train':
+        sp = dev_partition(patient)
+    elif domain == 'hub_valid':
+        sp = 'test'
+    else:
+        skipped[domain] += 1; continue
+    if not rec.get('parse_ok'):
+        skipped[f'no_label_{sp}'] += 1; continue
+    candidate_pairs[sp] += 1
+    if vkey(pv) not in POOLED or vkey(cv) not in POOLED:
+        skipped[f'no_feature_{sp}'] += 1
+        if sp == 'test': missing_hub_valid.append(key)
+        continue
+    usable_pairs[sp] += 1
+    for fd in rec.get('findings', []):
+        if fd.get('tier') != 'explicit':
+            skipped['not_explicit'] += 1; continue
+        d = fd.get('direction'); f = fd.get('finding')
+        if d not in C2I or not f:
+            skipped['bad_dir'] += 1; continue
+        pid = pair_ids.setdefault(key, len(pair_ids))
+        examples[sp].append({
+            'vp': vkey(pv), 'vc': vkey(cv), 'patient': patient,
+            'finding': f, 'hub_domain': domain,
+            'y': C2I[d], 'pid': pid,
+            'evidence': fd.get('evidence', '') or '',
+            'dynamic': dyn_of.get(key, ''),
+        })
+
+for sp in ['train', 'tune']:
+    assert all(e['hub_domain'] == 'hub_train' and e['vp'].startswith('train_') and
+               e['vc'].startswith('train_') for e in examples[sp])
+assert all(e['hub_domain'] == 'hub_valid' and e['vp'].startswith('valid_') and
+           e['vc'].startswith('valid_') for e in examples['test'])
+patients = {sp: {e['patient'] for e in examples[sp]} for sp in examples}
+assert patients['train'].isdisjoint(patients['tune'])
+assert patients['train'].isdisjoint(patients['test'])
+assert patients['tune'].isdisjoint(patients['test'])
+assert examples['train'] and examples['tune'] and examples['test']
+if REQUIRE_COMPLETE_HUB_VALID_FEATURES:
+    assert not missing_hub_valid, (
+        f'{len(missing_hub_valid)} labeled Hub-validation pairs lack cached features; '
+        f'finish encode_split("valid") first. First missing: {missing_hub_valid[:3]}')
+
+print('candidate labeled pairs:', dict(candidate_pairs))
+print('usable cached pairs    :', dict(usable_pairs))
+for sp in ['train', 'tune', 'test']:
+    cc = Counter(e['y'] for e in examples[sp])
+    print(f'{sp:5}: {len(examples[sp]):5} ex / {len(patients[sp]):4} patients  '
+          f'(worsened={cc[0]} stable={cc[1]} improved={cc[2]})')
+print('skipped:', dict(skipped))
+print('LEAKAGE CHECK PASSED: optimizer=train_* only; tune=train_* only; final test=valid_* only')
+
+FINDINGS = ['Medical material','Arterial wall calcification','Cardiomegaly',
+  'Pericardial effusion','Coronary artery wall calcification','Hiatal hernia',
+  'Lymphadenopathy','Emphysema','Atelectasis','Lung nodule','Lung opacity',
+  'Pulmonary fibrotic sequela','Pleural effusion','Mosaic attenuation pattern',
+  'Peribronchial thickening','Consolidation','Bronchiectasis','Interlobular septal thickening']
+F2I = {f: i for i, f in enumerate(FINDINGS)}
+assert {e['finding'] for sp in examples for e in examples[sp]} <= set(FINDINGS)
+print('canonical findings:', len(FINDINGS))
+for sp in examples:
+    for e in examples[sp]:
+        e['fid'] = F2I[e['finding']]

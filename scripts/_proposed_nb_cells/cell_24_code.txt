@@ -1,0 +1,28 @@
+model.eval()
+D = DATA['test']
+all_p = []
+with torch.no_grad():
+    bs = 512
+    for i in range(0, len(D['y']), bs):
+        sl = slice(i, i + bs)
+        vd, _ = model(D['vp'][sl].to(DEVICE), D['vc'][sl].to(DEVICE), D['fid'][sl].to(DEVICE))
+        lg = logits_from(vd, D['pr'][sl].to(DEVICE), model.logit_scale)
+        all_p.append(lg.argmax(1).cpu())
+pred = torch.cat(all_p).numpy()
+y = D['y'].numpy()
+Fn = D['fn']
+by_f = defaultdict(lambda: {'y': [], 'p': []})
+for yi, pi, fi in zip(y, pred, Fn):
+    by_f[fi]['y'].append(yi); by_f[fi]['p'].append(pi)
+rows = []
+for f, d in by_f.items():
+    yy, pp = np.array(d['y']), np.array(d['p'])
+    present = sorted(set(yy.tolist()))
+    rows.append((f, len(yy), (yy == pp).mean(),
+                 f1_score(yy, pp, labels=present, average='macro', zero_division=0)))
+rows.sort(key=lambda r: -r[1])
+print('=== FINAL HUB-VALIDATION TEST — per disease ===')
+print(f"{'finding':<34}{'n':>5}{'acc':>7}{'macroF1*':>10}")
+for f, n, a, mf1 in rows:
+    print(f'{f:<34}{n:>5}{a:>7.3f}{mf1:>10.3f}')
+print('\n* macro-F1 over classes actually present for that finding')

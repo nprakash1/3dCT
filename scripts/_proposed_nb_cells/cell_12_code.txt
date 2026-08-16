@@ -1,0 +1,66 @@
+TEMPLATES = {
+    'worsened': ['{f} has increased compared to the prior study',
+                 '{f} has worsened since the previous exam',
+                 'interval enlargement of {f}', 'new {f}', 'increased {f}'],
+    'stable':   ['{f} is unchanged compared to the prior study',
+                 'stable {f} with no interval change',
+                 'no significant change in {f}', '{f} appears similar to prior'],
+    'improved': ['{f} has decreased compared to the prior study',
+                 '{f} has improved since the previous exam',
+                 'interval decrease of {f}', '{f} has resolved', 'decreased {f}'],
+}
+
+def l2np(x):
+    return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-8)
+
+def embed_mean(texts):
+    texts = [t for t in texts if t and str(t).strip()]
+    if not texts:
+        return None
+    vecs = []
+    B = 64
+    for i in range(0, len(texts), B):
+        vecs.append(emb.embed_texts(texts[i:i+B], normalize=True).numpy())
+    e = np.concatenate(vecs, 0).mean(0)
+    return l2np(e)
+
+proto_cache = PROTO_PT if PROTO_SOURCE == 'templates' else PROTO_PT.replace('.pt', f'_{PROTO_SOURCE}.pt')
+
+if os.path.exists(proto_cache) and PROTO_SOURCE == 'templates':
+    PROTO = torch.load(proto_cache)
+    print('loaded cached prototypes for', len(PROTO), 'findings from', proto_cache)
+else:
+    PROTO = {}
+    from tqdm.auto import tqdm
+    real_bank = defaultdict(lambda: defaultdict(list))
+    if PROTO_SOURCE == 'real':
+        for e in examples['train']:
+            txt = (e.get('evidence') or e.get('dynamic') or '').strip()
+            if txt:
+                real_bank[e['finding']][e['y']].append(txt)
+    for f in tqdm(FINDINGS):
+        rows = []
+        for ci, c in enumerate(CLASSES):
+            if PROTO_SOURCE == 'real':
+                vec = embed_mean(real_bank[f][ci])
+                if vec is None:
+                    prompts = [t.format(f=f.lower()) for t in TEMPLATES[c]]
+                    vec = embed_mean(prompts)
+            else:
+                prompts = [t.format(f=f.lower()) for t in TEMPLATES[c]]
+                vec = embed_mean(prompts)
+            rows.append(vec)
+        PROTO[f] = torch.tensor(np.stack(rows)).float()  # (3,512)
+    torch.save(PROTO, proto_cache)
+    print('built + cached prototypes for', len(PROTO), 'findings ->', proto_cache, '| source=', PROTO_SOURCE)
+
+# optional frozen finding-name embeddings for conditioning (when not using learned emb)
+FINDING_NAME_PT = f'{DRIVE}/ctclip_cache/finding_name_emb.pt'
+if os.path.exists(FINDING_NAME_PT):
+    FINDING_NAME_EMB = torch.load(FINDING_NAME_PT)
+    print('loaded finding-name embeddings', FINDING_NAME_EMB.shape)
+else:
+    name_prompts = [f'finding: {f.lower()}' for f in FINDINGS]
+    FINDING_NAME_EMB = emb.embed_texts(name_prompts, normalize=True).float().cpu()  # (18,512)
+    torch.save(FINDING_NAME_EMB, FINDING_NAME_PT)
+    print('built finding-name embeddings', FINDING_NAME_EMB.shape, '->', FINDING_NAME_PT)

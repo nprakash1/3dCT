@@ -1,0 +1,11 @@
+import glob
+POOLED = {}
+for fp in glob.glob(f'{IMG_DIR}/*.pt'):
+    key = os.path.basename(fp)[:-3]
+    POOLED[key] = torch.load(fp, map_location='cpu').float()  # (512,)
+print('loaded image embeddings for', len(POOLED), 'volumes')
+cache_domain = Counter('train' if k.startswith('train_') else
+                       'hub_valid' if k.startswith('valid_') else 'unknown' for k in POOLED)
+print('cache by CT-RATE Hub domain:', dict(cache_domain))
+assert POOLED, 'No image embeddings found — run ctclip_features_colab.ipynb first.'
+print('example dim:', tuple(next(iter(POOLED.values())).shape))

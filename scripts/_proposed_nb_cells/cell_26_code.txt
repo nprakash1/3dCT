@@ -1,0 +1,28 @@
+ckpt_dir = f'{DRIVE}/ctclip_cache/checkpoints'
+os.makedirs(ckpt_dir, exist_ok=True)
+tag = (
+    f"fc{int(FINDING_CONDITIONING)}_mag{int(USE_MAGNITUDE)}_supcon{int(USE_SUPCON)}"
+    f"_proto{PROTO_SOURCE}_seed{SPLIT_SEED}"
+)
+ckpt_path = f'{ckpt_dir}/proposed_{tag}.pt'
+torch.save({
+    'model': best_state,
+    'tune_macro_f1': best,
+    'findings': FINDINGS,
+    'classes': CLASSES,
+    'config': dict(
+        FINDING_CONDITIONING=FINDING_CONDITIONING,
+        FINDING_AS_4TH_TOKEN=FINDING_AS_4TH_TOKEN,
+        USE_LEARNED_FINDING_EMB=USE_LEARNED_FINDING_EMB,
+        USE_MAGNITUDE=USE_MAGNITUDE,
+        USE_SUPCON=USE_SUPCON,
+        PROTO_SOURCE=PROTO_SOURCE,
+        ANTISYM=ANTISYM,
+        D_MODEL=D_MODEL, LR=LR,
+        LAMBDA_CE=LAMBDA_CE, LAMBDA_MAG=LAMBDA_MAG, LAMBDA_CON=LAMBDA_CON,
+        TAU_CON_INIT=TAU_CON_INIT,
+        K_FINDINGS_PER_BATCH=K_FINDINGS_PER_BATCH,
+        N_PER_CLASS=N_PER_CLASS,
+    ),
+}, ckpt_path)
+print('saved', ckpt_path)

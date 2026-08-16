@@ -1,0 +1,20 @@
+# Proposed pipeline — Finding-Conditioned CT Temporal Progression (Colab)
+
+Implements the design in `docs/proposed_pipeline.png`:
+
+**d_f = g(v_prior, v_current, finding)**
+
+**What is new vs `train_ctclip_temporal_colab.ipynb` (current pipeline):**
+1. **Finding conditioning** inside the Difference Transformer (`e_diff <- e_diff + e_f`, or finding as a 4th token) so one pair produces many finding-specific `d_f`.
+2. **Masked same-finding SupCon** on `d_f` (not instance InfoNCE vs report text): positives = same finding + same direction; negatives = same finding + other direction; **other findings are ignored** (masked out).
+3. **Separate contrastive temperature** `tau_con` (does not share CE `logit_scale`).
+4. **Contrastive-aware batching** (~K findings x 3 classes) so each batch has usable SupCon positives/negatives.
+5. **Ablation knobs:** CE | +mag | +SupCon · templates vs real text for prototypes · +/- finding conditioning.
+
+**Unchanged protocol:**
+- Frozen CT-CLIP image/text towers; only the Difference Transformer trains.
+- Hub `train_*` -> train + patient-held-out tune (early-stop on macro-F1); Hub `valid_*` -> **one** final test.
+- Inference: `argmax cos(d_f, PROTO[finding])` — **no report text** at test time.
+- Prefer `report_explicit` / tier=`explicit` silver labels.
+
+Diagram: `docs/proposed_pipeline.png`.

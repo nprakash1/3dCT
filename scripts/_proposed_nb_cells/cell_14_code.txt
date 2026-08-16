@@ -1,0 +1,16 @@
+def tensorize(exs):
+    VP = torch.stack([POOLED[e['vp']] for e in exs])
+    VC = torch.stack([POOLED[e['vc']] for e in exs])
+    PR = torch.stack([PROTO[e['finding']] for e in exs])          # (N,3,512)
+    Y  = torch.tensor([e['y'] for e in exs], dtype=torch.long)
+    FID = torch.tensor([e['fid'] for e in exs], dtype=torch.long)
+    PID = torch.tensor([e['pid'] for e in exs], dtype=torch.long)
+    Fn = [e['finding'] for e in exs]
+    return {'vp': VP, 'vc': VC, 'pr': PR, 'y': Y, 'fid': FID, 'pid': PID, 'fn': Fn}
+
+DATA = {sp: tensorize(examples[sp]) for sp in ['train', 'tune', 'test']}
+cnt = Counter(DATA['train']['y'].tolist()); tot = sum(cnt.values())
+W_cls = torch.tensor([tot / (3 * max(cnt[i], 1)) for i in range(3)], dtype=torch.float32)
+print('class weights (w/s/i):', [round(x, 3) for x in W_cls.tolist()])
+for sp in DATA:
+    print(sp, {k: (tuple(v.shape) if torch.is_tensor(v) else len(v)) for k, v in DATA[sp].items()})

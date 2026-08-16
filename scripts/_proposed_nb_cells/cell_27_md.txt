@@ -1,0 +1,26 @@
+## Notes / ablations
+
+| Knob | Suggested sweeps |
+|---|---|
+| `FINDING_CONDITIONING` | `True` (proposed) vs `False` (current shared-`d` baseline) |
+| `FINDING_AS_4TH_TOKEN` | `False` (`e_diff+e_f`) vs `True` (4th token) |
+| `USE_MAGNITUDE` | off / on (`LAMBDA_MAG in {0.25, 0.5, 1.0}`) |
+| `USE_SUPCON` | off / on (`LAMBDA_CON in {0.1, 0.25, 0.5}`) |
+| `PROTO_SOURCE` | `templates` vs `real` |
+| `USE_LEARNED_FINDING_EMB` | learned `nn.Embedding` vs frozen text-name emb |
+
+**Loss design reminders**
+- SupCon is **same-finding masked** — other findings never appear as negatives (avoids punishing cross-finding geometry).
+- `tau_con` is **separate** from CE `logit_scale` (avoids temperature tug-of-war).
+- Magnitude head is an **aux regularizer** only; inference is still pure prototype argmax.
+
+**Protocol (do not break)**
+- Optimize + early-stop on Hub `train_*` only (`tune` = patient-held-out fraction).
+- Inspect Hub `valid_*` **once** after freezing choices.
+- Inference never uses report text — only `v_prior`, `v_current`, `finding` id/name.
+
+**Compare to current notebook** (`train_ctclip_temporal_colab.ipynb`):
+- Current: `d = g(v_p, v_c)` shared across findings; optional InfoNCE(`d`, report text).
+- Proposed: `d_f = g(v_p, v_c, f)`; masked SupCon on directions within a finding.
+
+See `docs/proposed_pipeline.png` and `docs/current_pipeline.png`.

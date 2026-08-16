@@ -1,0 +1,3 @@
+## 9. Contrastive-aware batch sampler
+
+Build batches that cover ~`K_FINDINGS_PER_BATCH` findings with rows from multiple direction classes so masked SupCon has same-finding positives **and** other-direction negatives.

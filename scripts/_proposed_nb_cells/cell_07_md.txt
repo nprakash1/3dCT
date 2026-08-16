@@ -1,0 +1,3 @@
+## 4. Frozen CT-CLIP text tower (prototypes + optional finding-name embeddings)
+
+Weights stay frozen. Used only to build `PROTO[finding]` and (if `USE_LEARNED_FINDING_EMB=False`) a frozen finding-name vector for conditioning.

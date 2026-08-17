@@ -347,3 +347,183 @@ No catastrophic overfit. The story is **underperformance of non-CE objectives**,
 | Cell sources | `scripts/_proposed_nb_cells/` |
 | This ablation CSV | Drive `ctclip_cache/ablations/loss_ablation_20260817_020740.csv` |
 
+
+
+---
+
+## 9. Follow-up experiment — cross-modal temporal SupCon (2026-08-17)
+
+**Run tag:** `20260817_072340`  
+**CSV / ckpts:** `Drive/.../ctclip_cache/ablations/proposed_ablation_*_20260817_072340.pt`  
+**Notebook:** proposed pipeline after commit `0185778` (cross-modal contrastive + built-in ablation cell)
+
+This section **does not replace** §4–6. Those results used **embedding-only** (`d`↔`d`) SupCon.  
+Here the contrastive term is **cross-modal** (`d`↔ temporal **text**), with the same CE / mag / split protocol.
+
+### 9.1 What changed vs the first ablation (detail)
+
+| Piece | **Old** ablation (`020740`, §4) | **New** ablation (`072340`, this section) |
+|-------|--------------------------------|-------------------------------------------|
+| Contrastive objects | `d_i` vs other **`d_j`** (same modality) | `d_i` vs frozen **temporal-sentence emb `t_j`** |
+| Text in SupCon? | **No** | **Yes** — evidence/dynamic sentences; synthetic stable templates only if no real stable text |
+| Positive | same finding + same class **embedding** | same finding + same class **sentence** (incl. own sentence) |
+| Negative | same finding + other class **embedding** | same finding + other class **sentence** |
+| Ignored | other findings’ `d` | other findings’ **texts** |
+| Instance CLIP InfoNCE? | No | Still **no** (not “all other texts in batch = negative”) |
+| SupCon formula | avg log-prob over each positive | **same** (not log-sum of positives) |
+| Valid anchor | ≥1 positive (old code) | ≥1 positive **and** ≥1 same-finding negative |
+| Direction | n/a | **one-way** `d→text` (`symmetric=False`) |
+| CE | Unchanged: cos(`d`, `PROTO[f]`) × `logit_scale` | **Unchanged** |
+| Mag | Unchanged BCE | **Unchanged** |
+| Batching when SupCon on | contrastive ~K×3×N | **same** sampler |
+| Inference | argmax cos to PROTO; no report | **same** |
+| Temperature | `tau_con` ≠ CE `logit_scale` | **same separation** |
+
+**CE was not redesigned.** “Fixed CE” here means:
+
+1. **Same 3-way prototype CE** as before (templates or real PROTO bank).  
+2. **Same readout at test** — never uses dynamic text.  
+3. Ablation still toggles CE **on/off** as a training loss; when CE is off, F1 is still measured with the prototype head (so CE-off rows probe whether mag/SupCon alone align `d` to PROTO).  
+4. Only the **SupCon side** was upgraded from `d`↔`d` to `d`↔`t`.
+
+**Temporal text construction (new):**
+
+```text
+prefer:  finding-level evidence
+else:    pair-level dynamic_sentences
+else if stable:  one fixed synthetic template (seeded, not resampled each epoch)
+else:    class template fallback (worsened/improved only if extraction empty)
+```
+
+Sentences are embedded **once** with the frozen CT-CLIP text tower and stored as `DATA[*]['tt']`.
+
+### 9.2 New results table (sorted by test macro-F1)
+
+| Rank | CE | Mag | SupCon | Tune macro-F1 | **Test macro-F1** | Test F1 wors. | Test F1 stable | Test F1 impr. | Best ep | Epochs | Time (s) |
+|-----:|:--:|:---:|:------:|-------------:|------------------:|-------------:|---------------:|--------------:|--------:|-------:|---------:|
+| 1 | ✓ | ✓ | | 0.552 | **0.575** | 0.555 | 0.483 | 0.688 | 2 | 22 | 12.9 |
+| 2 | ✓ | | | 0.547 | **0.562** | 0.503 | 0.492 | 0.691 | 1 | 21 | 11.9 |
+| 3 | ✓ | ✓ | ✓ | 0.517 | **0.473** | 0.478 | 0.375 | 0.567 | 46 | 66 | 47.7 |
+| 4 | | | ✓ | 0.481 | **0.473** | 0.444 | 0.363 | 0.613 | 21 | 41 | 27.7 |
+| 5 | ✓ | | ✓ | 0.510 | **0.454** | 0.461 | 0.358 | 0.544 | 16 | 36 | 25.2 |
+| 6 | | ✓ | ✓ | 0.473 | **0.436** | 0.418 | 0.384 | 0.507 | 8 | 28 | 19.3 |
+| 7 | | ✓ | | 0.332 | **0.346** | 0.413 | 0.278 | 0.348 | 46 | 66 | 35.8 |
+
+Compact grid (test macro-F1):
+
+| | Mag off, SupCon off | Mag on, SupCon off | Mag off, SupCon on | Mag on, SupCon on |
+|--|--------------------:|-------------------:|-------------------:|------------------:|
+| **CE on** | **0.562** | **0.575** | 0.454 | 0.473 |
+| **CE off** | *(skipped)* | 0.346 | **0.473** | 0.436 |
+
+### 9.3 Side-by-side with the old (`d`↔`d`) ablation
+
+| Setup | Old test F1 (`d`↔`d`) | New test F1 (`d`↔`t`) | Δ (new − old) |
+|-------|----------------------:|----------------------:|--------------:|
+| CE only | 0.554 | **0.562** | +0.008 |
+| CE + mag | 0.546 | **0.575** | **+0.029** |
+| CE + SupCon | 0.435 | 0.454 | +0.019 |
+| CE + mag + SupCon | 0.508 | 0.473 | −0.035 |
+| SupCon only | 0.276 | **0.473** | **+0.197** |
+| Mag only | 0.325 | 0.346 | +0.021 |
+| Mag + SupCon | 0.337 | 0.436 | +0.099 |
+
+---
+
+
+
+### 9.4 What the new results mean
+
+#### A. Best model is now **CE + magnitude** (test **0.575**)
+
+With cross-modal SupCon available, the winner is **not** CE-only:
+
+- CE + mag **0.575** > CE only **0.562**
+- Stable F1 remains the hard class (~0.48–0.49) but CE+mag is strongest overall
+- Both still peak very early (best epoch 1–2) → prototype CE still aligns fast; mag is a light, useful aux when not fighting text SupCon
+
+**Report CE+mag (or CE-only) as the main classifier** under default λ.
+
+#### B. Cross-modal SupCon alone is now **meaningful** (0.473 vs old 0.276)
+
+Old embedding-only SupCon without CE was ~chance on the prototype metric.
+New **text** SupCon alone reaches **test 0.473** — well above chance (~0.33).
+
+**Why:** positives/negatives are real progression **sentences** in the same joint space as PROTO. Pulling `d` toward “interval increase in …” language moves `d` into a region that **also** sits nearer the right class prototype, even without explicit CE.
+Old `d`↔`d` clustering had **no** obligation to sit on the text axes → prototype F1 stayed ~0.28.
+
+So: **cross-modal SupCon is a real training signal for this readout; embedding-only SupCon was not (for F1).**
+
+#### C. CE + cross-modal SupCon still **hurts** vs CE alone (0.45–0.47 vs 0.56–0.58)
+
+| Setup | Test F1 |
+|-------|--------:|
+| CE + mag | **0.575** |
+| CE only | 0.562 |
+| CE + mag + SupCon | 0.473 |
+| CE + SupCon | 0.454 |
+
+Adding SupCon on top of CE drops ~0.09–0.12 macro-F1 — same qualitative failure mode as before, slightly less severe than old CE+SupCon (0.435).
+
+**Interpretation:**
+
+1. **Objective tension** — CE pins `d` to 3 fixed PROTO vectors; SupCon also pulls toward **many varied** sentence embeddings (and away from other-class sentences). At `λ_con = 0.5` that second pressure is strong and can pull off the prototype simplex.
+2. **Batch confound remains** — SupCon on → contrastive ~90-row batches; SupCon off → random 256. Part of the gap may still be sampler, not only loss.
+3. **Slower / longer runs** when SupCon is on (best epochs 16–46, more wall time) vs CE paths (~epoch 2).
+4. **Tune vs test:** CE+SupCon tune 0.510 → test 0.454 (mild overfit / instability); CE+mag tune≈test (0.55/0.58).
+
+**Do not claim “add SupCon to CE improves F1”** at these defaults. SupCon is better as a **standalone / pretraining-style** signal or needs **much smaller `λ_con`** (and/or random-256 batches) before combining with CE.
+
+#### D. Mag alone still fails (0.346); mag + text SupCon is middling (0.436)
+
+Mag only teaches change vs stable — not 3-way direction → ~chance macro.
+Mag + SupCon ≈ SupCon-driven, slightly worse than SupCon only on test (0.436 vs 0.473).
+
+#### E. Per-class pattern (winners)
+
+Best row (CE+mag), test:
+
+| Class | F1 |
+|-------|---:|
+| improved | 0.688 |
+| worsened | 0.555 |
+| stable | 0.483 |
+
+Same story as before: **improved easiest, stable hardest.** Cross-modal SupCon alone has strong improved (0.613) but weaker stable (0.363).
+
+### 9.5 Updated conclusions (after both ablations)
+
+1. **Prototype CE remains the backbone** of a strong classifier (test ~0.56–0.58 with mag).
+2. **Magnitude** helps (or is at least competitive) when CE is on; best single number in the new sweep is **CE+mag = 0.575**.
+3. **Replacing `d`↔`d` SupCon with `d`↔ temporal text** is a clear win for **SupCon-only** (0.28 → 0.47) — the contrastive task now lives in the same space as evaluation language.
+4. **Combining CE + cross-modal SupCon at λ_con=0.5 still reduces F1** — tune λ_con / batching before treating full multi-loss as default.
+5. Prior §4–6 conclusions about CE-off / mag stay valid; update only the SupCon story: **text-aligned SupCon works; embedding-only SupCon did not (for prototype F1).**
+
+### One-sentence summary (new experiment)
+
+> With cross-modal masked SupCon, CE+magnitude reaches the best Hub-valid macro-F1 (~0.58); temporal-text SupCon alone is now competitive (~0.47) unlike the old embedding-only SupCon (~0.28), but adding SupCon on top of CE at default λ still hurts classification F1.
+
+### 9.6 Suggested next steps (revised)
+
+| Priority | Experiment |
+|----------|------------|
+| High | Multi-seed CE and CE+mag (error bars on 0.56–0.58) |
+| High | `λ_con ∈ {0.05, 0.1, 0.25}` with **CE fixed on** (recover CE+SupCon) |
+| High | CE+SupCon with **random-256** batches (unconfound sampler) |
+| Med | `symmetric=True` text↔d ablation at best λ_con |
+| Med | SupCon-only as warm-start then CE finetune |
+| Low | Compare real vs synthetic stable sentence rates vs F1 |
+
+---
+
+## 10. References (updated)
+
+| Resource | Path |
+|----------|------|
+| Proposed pipeline diagram | `docs/proposed_pipeline.png` |
+| Design write-up | `docs/improved_frozen_model_report.md` |
+| Colab trainer (cross-modal + ablation cell) | `notebooks/train_proposed_finding_conditioned_colab.ipynb` |
+| Cell sources | `scripts/_proposed_nb_cells/` |
+| Old ablation CSV (`d`↔`d`) | Drive `.../loss_ablation_20260817_020740.csv` |
+| New ablation ckpts (`d`↔`t`) | Drive `.../proposed_ablation_*_20260817_072340.pt` |
+

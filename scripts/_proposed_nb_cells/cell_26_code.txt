@@ -2,7 +2,7 @@ ckpt_dir = f'{DRIVE}/ctclip_cache/checkpoints'
 os.makedirs(ckpt_dir, exist_ok=True)
 tag = (
     f"fc{int(FINDING_CONDITIONING)}_mag{int(USE_MAGNITUDE)}_supcon{int(USE_SUPCON)}"
-    f"_proto{PROTO_SOURCE}_seed{SPLIT_SEED}"
+    f"_sym{int(CONTRASTIVE_SYMMETRIC)}_proto{PROTO_SOURCE}_seed{SPLIT_SEED}"
 )
 ckpt_path = f'{ckpt_dir}/proposed_{tag}.pt'
 torch.save({
@@ -14,13 +14,17 @@ torch.save({
         FINDING_CONDITIONING=FINDING_CONDITIONING,
         FINDING_AS_4TH_TOKEN=FINDING_AS_4TH_TOKEN,
         USE_LEARNED_FINDING_EMB=USE_LEARNED_FINDING_EMB,
+        USE_CE=USE_CE,
         USE_MAGNITUDE=USE_MAGNITUDE,
         USE_SUPCON=USE_SUPCON,
+        CONTRASTIVE_SYMMETRIC=CONTRASTIVE_SYMMETRIC,
+        LEARNABLE_TAU_CON=LEARNABLE_TAU_CON,
         PROTO_SOURCE=PROTO_SOURCE,
         ANTISYM=ANTISYM,
         D_MODEL=D_MODEL, LR=LR,
         LAMBDA_CE=LAMBDA_CE, LAMBDA_MAG=LAMBDA_MAG, LAMBDA_CON=LAMBDA_CON,
         TAU_CON_INIT=TAU_CON_INIT,
+        STABLE_TEXT_SEED=STABLE_TEXT_SEED,
         K_FINDINGS_PER_BATCH=K_FINDINGS_PER_BATCH,
         N_PER_CLASS=N_PER_CLASS,
     ),

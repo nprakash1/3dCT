@@ -10,13 +10,13 @@ from sklearn.metrics import f1_score, confusion_matrix
 csv.field_size_limit(10**9)
 
 DRIVE      = '/content/drive/MyDrive/3dCT'
-IMG_DIR    = f'{DRIVE}/ctclip_cache/img'             # 512-d per volume
-WEIGHTS    = f'{DRIVE}/ctclip_weights'               # CT-CLIP_v2.pt
-PROTO_PT   = f'{DRIVE}/ctclip_cache/proto_bank.pt'   # finding x class prototypes
+IMG_DIR    = f'{DRIVE}/ctclip_cache/img'
+WEIGHTS    = f'{DRIVE}/ctclip_weights'
+PROTO_PT   = f'{DRIVE}/ctclip_cache/proto_bank.pt'
+TTEXT_PT   = f'{DRIVE}/ctclip_cache/temporal_text_emb.pt'
 LAB        = '/content/3dCT/medgemma_labels_v3.jsonl'
-LAB_DS     = '/content/3dCT/medgemma_labels (2).jsonl'  # optional real temporal sentences
+LAB_DS     = '/content/3dCT/medgemma_labels (2).jsonl'
 
-# Hub train = only development domain. Hub validation = final test only.
 TUNE_FRAC  = 0.15
 SPLIT_SEED = 2026
 REQUIRE_COMPLETE_HUB_VALID_FEATURES = True
@@ -25,32 +25,39 @@ CLASSES = ['worsened', 'stable', 'improved']
 C2I = {c: i for i, c in enumerate(CLASSES)}
 I2C = {i: c for c, i in C2I.items()}
 
-# -------------------- proposed-design ablation knobs --------------------
-FINDING_CONDITIONING = True     # finding enters g(.); False = current-pipeline baseline
-FINDING_AS_4TH_TOKEN = False    # False: e_diff += e_f; True: tokens [e_diff, tp, tc, e_f]
-USE_LEARNED_FINDING_EMB = True  # True: nn.Embedding; False: freeze e_f from text tower name emb
+FINDING_CONDITIONING = True
+FINDING_AS_4TH_TOKEN = False
+USE_LEARNED_FINDING_EMB = True
 
-USE_CE         = True           # always keep True for classification readout
-USE_MAGNITUDE  = True           # optional BCE(mag, change vs stable)
-USE_SUPCON     = True           # masked same-finding SupCon (NEW)
+USE_CE         = True
+USE_MAGNITUDE  = True
+USE_SUPCON     = True
 
-PROTO_SOURCE   = 'templates'    # 'templates' | 'real'
-ANTISYM        = False          # d = g(c,p)-g(p,c); usually leave False with finding conditioning
+CONTRASTIVE_SYMMETRIC = False
+LEARNABLE_TAU_CON     = True
+TAU_CON_INIT          = 0.07
+STABLE_TEXT_SEED      = 2026
+
+PROTO_SOURCE   = 'templates'
+ANTISYM        = False
 
 D_MODEL, EPOCHS, LR, PATIENCE = 256, 120, 1e-3, 20
 WEIGHT_DECAY = 1e-2
 LAMBDA_CE, LAMBDA_MAG, LAMBDA_CON = 1.0, 0.5, 0.5
-TAU_CON_INIT = 0.07             # separate SupCon temperature (not logit_scale)
 
-# contrastive-aware batching: ~K findings x up to 3 classes x N_PER_CLASS rows
 K_FINDINGS_PER_BATCH = 8
-N_PER_CLASS          = 4        # target rows per (finding, class) bucket in a batch
-MAX_BATCH_SIZE       = 256      # hard cap
+N_PER_CLASS          = 4
+MAX_BATCH_SIZE       = 256
 
 torch.manual_seed(0); np.random.seed(0); random.seed(0)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print('device:', DEVICE, '| img cache exists:', os.path.isdir(IMG_DIR))
 print('knobs:', dict(
-    FINDING_CONDITIONING=FINDING_CONDITIONING, FINDING_AS_4TH_TOKEN=FINDING_AS_4TH_TOKEN,
-    USE_MAGNITUDE=USE_MAGNITUDE, USE_SUPCON=USE_SUPCON, PROTO_SOURCE=PROTO_SOURCE,
-    ANTISYM=ANTISYM))
+    FINDING_CONDITIONING=FINDING_CONDITIONING,
+    FINDING_AS_4TH_TOKEN=FINDING_AS_4TH_TOKEN,
+    USE_CE=USE_CE, USE_MAGNITUDE=USE_MAGNITUDE, USE_SUPCON=USE_SUPCON,
+    CONTRASTIVE_SYMMETRIC=CONTRASTIVE_SYMMETRIC,
+    LEARNABLE_TAU_CON=LEARNABLE_TAU_CON,
+    PROTO_SOURCE=PROTO_SOURCE, ANTISYM=ANTISYM,
+    LAMBDA_CE=LAMBDA_CE, LAMBDA_MAG=LAMBDA_MAG, LAMBDA_CON=LAMBDA_CON,
+    TAU_CON_INIT=TAU_CON_INIT))

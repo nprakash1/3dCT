@@ -5,7 +5,7 @@ class DifferenceTransformer(nn.Module):
                  dropout=0.1, antisym=False, magnitude=False,
                  finding_conditioning=True, finding_as_4th_token=False,
                  use_learned_finding_emb=True, frozen_finding_emb=None,
-                 tau_con_init=0.07):
+                 tau_con_init=0.07, learnable_tau_con=True):
         super().__init__()
         self.finding_conditioning = finding_conditioning
         self.finding_as_4th_token = finding_as_4th_token and finding_conditioning
@@ -31,7 +31,11 @@ class DifferenceTransformer(nn.Module):
         self.head = nn.Linear(d_model, d_in)
         self.mag_head = nn.Linear(d_model, 1) if magnitude else None
         self.logit_scale = nn.Parameter(torch.tensor(float(np.log(1 / 0.07))))
-        self.log_tau_con = nn.Parameter(torch.tensor(float(np.log(tau_con_init))))
+        log_tau = float(np.log(tau_con_init))
+        if learnable_tau_con:
+            self.log_tau_con = nn.Parameter(torch.tensor(log_tau))
+        else:
+            self.register_buffer('log_tau_con', torch.tensor(log_tau))
 
     def _e_f(self, fid):
         if not self.finding_conditioning:
@@ -78,8 +82,83 @@ def logits_from(vd, proto, logit_scale):
     return logit_scale.exp().clamp(max=100) * cos
 
 
+def _masked_crossmodal_one_way(anchor, other, y_a, y_o, fid_a, fid_o, tau):
+    """SupCon average-over-positives: anchor retrieves among other.
+
+    Positives: same finding AND same label.
+    Negatives: same finding AND different label.
+    Ignored: different finding (not in denominator).
+    Valid anchor: >=1 positive AND >=1 same-finding different-label negative.
+    """
+    anchor = F.normalize(anchor, dim=-1)
+    other = F.normalize(other, dim=-1)
+    B, M = anchor.size(0), other.size(0)
+    if B == 0 or M == 0:
+        return anchor.new_zeros(()), {'n_valid': 0}
+
+    sim = (anchor @ other.t()) / tau
+
+    same_f = fid_a.unsqueeze(1).eq(fid_o.unsqueeze(0))
+    same_y = y_a.unsqueeze(1).eq(y_o.unsqueeze(0))
+    pos_mask = same_f & same_y
+    neg_mask = same_f & ~same_y
+    allowed = same_f
+
+    pos_counts = pos_mask.sum(dim=1).float()
+    neg_counts = neg_mask.sum(dim=1).float()
+    valid = (pos_counts >= 1) & (neg_counts >= 1)
+    n_valid = int(valid.sum().item())
+    if n_valid == 0:
+        return anchor.new_zeros(()), {
+            'n_valid': 0, 'n_anchors': B,
+            'mean_pos': 0.0, 'mean_neg': 0.0,
+        }
+
+    neg_large = torch.finfo(sim.dtype).min / 4
+    logits = sim.masked_fill(~allowed, neg_large)
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+    exp_logits = logits.exp() * allowed.float()
+    log_denom = exp_logits.sum(dim=1, keepdim=True).clamp(min=1e-8).log()
+    log_prob = logits - log_denom
+
+    pos_log = torch.where(pos_mask, log_prob, torch.zeros_like(log_prob))
+    mean_pos = pos_log.sum(dim=1) / pos_counts.clamp(min=1.0)
+    loss = -mean_pos[valid].mean()
+    if not torch.isfinite(loss):
+        loss = anchor.new_zeros(())
+
+    with torch.no_grad():
+        cos = anchor @ other.t()
+
+        def _row_mean(x, mask):
+            s = torch.where(mask, x, torch.zeros_like(x)).sum(dim=1)
+            c = mask.sum(dim=1).clamp(min=1).float()
+            return (s / c)[valid].mean().item() if valid.any() else 0.0
+
+        stats = {
+            'n_valid': n_valid,
+            'n_anchors': B,
+            'mean_pos_count': float(pos_counts[valid].mean().item()),
+            'mean_neg_count': float(neg_counts[valid].mean().item()),
+            'mean_pos_cos': _row_mean(cos, pos_mask),
+            'mean_neg_cos': _row_mean(cos, neg_mask),
+        }
+    return loss, stats
+
+
+def masked_crossmodal_supcon_loss(d, t, y, fid, tau, symmetric=False):
+    """Cross-modal masked SupCon: d (image temporal) vs t (frozen temporal text)."""
+    t = t.detach()
+    loss_i2t, st = _masked_crossmodal_one_way(d, t, y, y, fid, fid, tau)
+    if not symmetric:
+        return loss_i2t, st
+    loss_t2i, st2 = _masked_crossmodal_one_way(t, d, y, y, fid, fid, tau)
+    st = {**st, 'n_valid_t2i': st2.get('n_valid', 0)}
+    return 0.5 * (loss_i2t + loss_t2i), st
+
+
 def masked_supcon_loss(z, y, fid, tau):
-    """Same-finding masked SupCon: + same dir, - other dir, ignore other findings."""
+    """DEPRECATED embedding-only SupCon. Prefer masked_crossmodal_supcon_loss."""
     z = F.normalize(z, dim=-1)
     B = z.size(0)
     if B < 2:
@@ -90,7 +169,8 @@ def masked_supcon_loss(z, y, fid, tau):
     pos_mask = same_f & y.unsqueeze(0).eq(y.unsqueeze(1))
     allowed = same_f
     pos_counts = pos_mask.sum(dim=1).float()
-    valid = (pos_counts > 0) & (allowed.sum(dim=1) > 0)
+    neg_counts = (same_f & ~y.unsqueeze(0).eq(y.unsqueeze(1))).sum(dim=1).float()
+    valid = (pos_counts > 0) & (neg_counts > 0)
     if not valid.any():
         return z.new_zeros(())
     neg_large = torch.finfo(sim.dtype).min / 2
@@ -110,7 +190,8 @@ _probe = DifferenceTransformer(
     finding_conditioning=FINDING_CONDITIONING, finding_as_4th_token=FINDING_AS_4TH_TOKEN,
     use_learned_finding_emb=USE_LEARNED_FINDING_EMB,
     frozen_finding_emb=None if USE_LEARNED_FINDING_EMB else FINDING_NAME_EMB,
-    tau_con_init=TAU_CON_INIT,
+    tau_con_init=TAU_CON_INIT, learnable_tau_con=LEARNABLE_TAU_CON,
 )
 print('module trainable params:', f'{npar(_probe):,}')
 del _probe
+

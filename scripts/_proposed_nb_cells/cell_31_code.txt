@@ -1,0 +1,277 @@
+# Loss ablation: CE x Mag x SupCon (cross-modal d <-> temporal text)
+import os, random, time
+from itertools import product
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from sklearn.metrics import f1_score
+
+SKIP_ALL_OFF = True
+QUICK_ABLATION = False
+ABLATION_EPOCHS = EPOCHS
+ABLATION_PATIENCE = PATIENCE
+ABLATION_SEED = 0
+RUN_TEST_EACH = True
+SAVE_CKPTS = True
+SAVE_CSV = True
+
+_SYM = globals().get('CONTRASTIVE_SYMMETRIC', False)
+_LEARN_TAU = globals().get('LEARNABLE_TAU_CON', True)
+
+ABL_DIR = f'{DRIVE}/ctclip_cache/ablations'
+os.makedirs(ABL_DIR, exist_ok=True)
+ts = time.strftime('%Y%m%d_%H%M%S')
+
+assert 'tt' in DATA['train'], "DATA['train']['tt'] missing — run temporal-text + tensorize cells first"
+assert 'masked_crossmodal_supcon_loss' in globals(), 'masked_crossmodal_supcon_loss missing — run model cell'
+
+def _set_seed(s):
+    torch.manual_seed(s)
+    np.random.seed(s)
+    random.seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+
+def _make_model():
+    kwargs = dict(
+        n_findings=len(FINDINGS),
+        d_model=D_MODEL,
+        antisym=ANTISYM,
+        magnitude=True,
+        finding_conditioning=FINDING_CONDITIONING,
+        finding_as_4th_token=FINDING_AS_4TH_TOKEN,
+        use_learned_finding_emb=USE_LEARNED_FINDING_EMB,
+        frozen_finding_emb=None if USE_LEARNED_FINDING_EMB else FINDING_NAME_EMB,
+        tau_con_init=TAU_CON_INIT,
+    )
+    try:
+        return DifferenceTransformer(**kwargs, learnable_tau_con=_LEARN_TAU).to(DEVICE)
+    except TypeError:
+        return DifferenceTransformer(**kwargs).to(DEVICE)
+
+@torch.no_grad()
+def _evaluate(model, split):
+    model.eval()
+    D = DATA[split]
+    ce_fn = nn.CrossEntropyLoss(weight=W_cls.to(DEVICE))
+    all_y, all_p = [], []
+    tot, n = 0.0, 0
+    bs = 512
+    for i in range(0, len(D['y']), bs):
+        sl = slice(i, i + bs)
+        vp = D['vp'][sl].to(DEVICE)
+        vc = D['vc'][sl].to(DEVICE)
+        pr = D['pr'][sl].to(DEVICE)
+        y = D['y'][sl].to(DEVICE)
+        fid = D['fid'][sl].to(DEVICE)
+        vd, mag = model(vp, vc, fid)
+        lg = logits_from(vd, pr, model.logit_scale)
+        loss = ce_fn(lg, y)
+        tot += loss.item() * len(y)
+        n += len(y)
+        all_y += y.cpu().tolist()
+        all_p += lg.argmax(1).cpu().tolist()
+    y_true = np.array(all_y)
+    y_pred = np.array(all_p)
+    macro = f1_score(y_true, y_pred, labels=[0, 1, 2], average='macro', zero_division=0)
+    per = f1_score(y_true, y_pred, labels=[0, 1, 2], average=None, zero_division=0)
+    return {
+        'ce_loss': tot / max(n, 1),
+        'macro_f1': float(macro),
+        'f1_worsened': float(per[0]),
+        'f1_stable': float(per[1]),
+        'f1_improved': float(per[2]),
+    }
+
+def _train_one(use_ce, use_mag, use_supcon, seed):
+    _set_seed(seed)
+    model = _make_model()
+    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    ce_fn = nn.CrossEntropyLoss(weight=W_cls.to(DEVICE))
+    best, best_state, best_ep, bad = -1.0, None, 0, 0
+    n_train = len(DATA['train']['y'])
+
+    for ep in range(1, ABLATION_EPOCHS + 1):
+        model.train()
+        tot, n = 0.0, 0
+        for _ in range(STEPS):
+            if use_supcon:
+                idxs = sample_contrastive_batch(TRAIN_BUCKETS)
+                if len(idxs) < 4:
+                    idxs = random.sample(range(n_train), min(MAX_BATCH_SIZE, n_train))
+            else:
+                idxs = random.sample(range(n_train), min(MAX_BATCH_SIZE, n_train))
+
+            idxs_t = torch.tensor(idxs, dtype=torch.long)
+            vp = DATA['train']['vp'][idxs_t].to(DEVICE)
+            vc = DATA['train']['vc'][idxs_t].to(DEVICE)
+            pr = DATA['train']['pr'][idxs_t].to(DEVICE)
+            y = DATA['train']['y'][idxs_t].to(DEVICE)
+            fid = DATA['train']['fid'][idxs_t].to(DEVICE)
+            tt = DATA['train']['tt'][idxs_t].to(DEVICE)
+
+            vd, mag = model(vp, vc, fid)
+            lg = logits_from(vd, pr, model.logit_scale)
+
+            loss = vd.new_zeros(())
+            if use_ce:
+                loss = loss + LAMBDA_CE * ce_fn(lg, y)
+            if use_mag and mag is not None:
+                is_change = (y != C2I['stable']).float()
+                loss = loss + LAMBDA_MAG * F.binary_cross_entropy_with_logits(mag, is_change)
+            if use_supcon:
+                l_con, _st = masked_crossmodal_supcon_loss(
+                    vd, tt, y, fid, model.tau_con(), symmetric=_SYM)
+                loss = loss + LAMBDA_CON * l_con
+
+            if not torch.isfinite(loss) or (
+                loss.item() == 0.0 and not (use_ce or use_mag or use_supcon)
+            ):
+                loss = vd.sum() * 0.0
+
+            opt.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            tot += float(loss.item()) * len(idxs)
+            n += len(idxs)
+
+        tune = _evaluate(model, 'tune')
+        vf1 = tune['macro_f1']
+        if vf1 > best:
+            best = vf1
+            best_ep = ep
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+
+        if ep % 10 == 0 or ep == 1:
+            print('  ep %3d  loss %.3f  tuneF1 %.3f  best %.3f' % (
+                ep, tot / max(n, 1), vf1, best))
+
+        if bad >= ABLATION_PATIENCE:
+            print('  early stop @ ep %d  best tune macro-F1 %.3f' % (ep, best))
+            break
+
+    assert best_state is not None
+    model.load_state_dict(best_state)
+    return model, best_state, best, best_ep, ep
+
+
+combos = list(product([0, 1], [0, 1], [0, 1]))
+if SKIP_ALL_OFF:
+    combos = [c for c in combos if c != (0, 0, 0)]
+if QUICK_ABLATION:
+    combos = [c for c in combos if c[0] == 1]
+
+print('Running %d combos | epochs<=%d patience=%d' % (
+    len(combos), ABLATION_EPOCHS, ABLATION_PATIENCE))
+print('combos (CE, Mag, SupCon):', combos)
+print('contrastive = CROSS-MODAL d<->text | symmetric=', _SYM)
+
+rows = []
+for run_i, (ce, mag, sup) in enumerate(combos):
+    tag = 'ce%d_mag%d_supcon%d' % (ce, mag, sup)
+    print('')
+    print('=' * 60)
+    print('[%d/%d] %s' % (run_i + 1, len(combos), tag))
+    print('=' * 60)
+
+    seed = ABLATION_SEED + run_i
+    t0 = time.time()
+    model, state, best_tune, best_ep, epochs_ran = _train_one(
+        use_ce=bool(ce), use_mag=bool(mag), use_supcon=bool(sup), seed=seed)
+    tune_m = _evaluate(model, 'tune')
+    test_m = _evaluate(model, 'test') if RUN_TEST_EACH else None
+    elapsed = time.time() - t0
+
+    row = {
+        'ce': ce, 'mag': mag, 'supcon': sup, 'tag': tag, 'seed': seed,
+        'best_epoch': best_ep, 'epochs_ran': epochs_ran,
+        'seconds': round(elapsed, 1),
+        'tune_macro_f1': tune_m['macro_f1'],
+        'tune_f1_worsened': tune_m['f1_worsened'],
+        'tune_f1_stable': tune_m['f1_stable'],
+        'tune_f1_improved': tune_m['f1_improved'],
+    }
+    if test_m is not None:
+        row.update({
+            'test_macro_f1': test_m['macro_f1'],
+            'test_f1_worsened': test_m['f1_worsened'],
+            'test_f1_stable': test_m['f1_stable'],
+            'test_f1_improved': test_m['f1_improved'],
+        })
+    rows.append(row)
+
+    if SAVE_CKPTS:
+        path = '%s/proposed_ablation_%s_seed%d_%s.pt' % (ABL_DIR, tag, seed, ts)
+        torch.save({
+            'model': state,
+            'tune_macro_f1': best_tune,
+            'row': row,
+            'findings': FINDINGS,
+            'classes': CLASSES,
+            'config': dict(
+                FINDING_CONDITIONING=FINDING_CONDITIONING,
+                CONTRASTIVE_SYMMETRIC=_SYM,
+                PROTO_SOURCE=PROTO_SOURCE,
+                LAMBDA_CE=LAMBDA_CE, LAMBDA_MAG=LAMBDA_MAG, LAMBDA_CON=LAMBDA_CON,
+                TAU_CON_INIT=TAU_CON_INIT,
+                contrastive='crossmodal_d_to_text',
+            ),
+        }, path)
+        print('  saved', path)
+
+    msg = '  tune macro-F1=%.3f' % tune_m['macro_f1']
+    if test_m is not None:
+        msg += '  |  test macro-F1=%.3f' % test_m['macro_f1']
+    msg += '  |  %.1f min' % (elapsed / 60.0)
+    print(msg)
+
+df = pd.DataFrame(rows)
+sort_col = 'test_macro_f1' if 'test_macro_f1' in df.columns else 'tune_macro_f1'
+df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+print('')
+print('=' * 60)
+print('LOSS ABLATION SUMMARY (sorted by %s)' % sort_col)
+print('=' * 60)
+show_cols = [c for c in [
+    'ce', 'mag', 'supcon', 'tune_macro_f1', 'test_macro_f1',
+    'test_f1_worsened', 'test_f1_stable', 'test_f1_improved',
+    'best_epoch', 'epochs_ran', 'seconds',
+] if c in df.columns]
+try:
+    display(df[show_cols])
+except NameError:
+    print(df[show_cols].to_string(index=False))
+
+if SAVE_CSV:
+    csv_path = '%s/loss_ablation_%s.csv' % (ABL_DIR, ts)
+    df.to_csv(csv_path, index=False)
+    print('wrote', csv_path)
+
+try:
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8, 4))
+    labels = ['CE%d/M%d/S%d' % (r.ce, r.mag, r.supcon) for _, r in df.iterrows()]
+    vals = df[sort_col].values
+    ax.bar(range(len(vals)), vals, color='steelblue')
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=30, ha='right')
+    ax.set_ylabel(sort_col)
+    ax.set_title('Loss ablation (cross-modal SupCon)')
+    ax.set_ylim(0, max(0.5, float(vals.max()) + 0.05))
+    ax.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+except Exception as e:
+    print('plot skipped:', e)
+
+ABLATION_DF = df
+print('Done. Results in ABLATION_DF')
+

@@ -1,3 +1,5 @@
-## 6. Build finding x class text prototypes (`PROTO[finding]`, 3x512, frozen)
+## 6. Text prototypes (CE) + temporal sentences (contrastive)
 
-Default = template bank (v1). Set `PROTO_SOURCE='real'` to average available evidence/dynamic text per (finding, class) from the **train** split only (falls back to templates if empty).
+**CE prototypes** — frozen 3-way bank per finding (`PROTO[f]`). Default = template bank. Set `PROTO_SOURCE='real'` to average train evince/dynamic text per (finding, class).
+
+**Contrastive temporal text** — per example, prefer real evidence/dynamic sentences for worsened/improved/stable. If stable has no real sentence, assign **one fixed** synthetic template (seeded, not resampled each epoch). Embeddings cached with the frozen text tower.

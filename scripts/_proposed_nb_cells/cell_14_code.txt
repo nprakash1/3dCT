@@ -1,16 +1,25 @@
-def tensorize(exs):
+def tensorize(exs, ttext_emb):
     VP = torch.stack([POOLED[e['vp']] for e in exs])
     VC = torch.stack([POOLED[e['vc']] for e in exs])
     PR = torch.stack([PROTO[e['finding']] for e in exs])          # (N,3,512)
     Y  = torch.tensor([e['y'] for e in exs], dtype=torch.long)
     FID = torch.tensor([e['fid'] for e in exs], dtype=torch.long)
     PID = torch.tensor([e['pid'] for e in exs], dtype=torch.long)
+    TT = ttext_emb.float().clone()                                 # (N,512) frozen temporal sentence emb
+    SRC = [e['temporal_src'] for e in exs]
+    TID = torch.tensor([e['synth_template_id'] for e in exs], dtype=torch.long)
     Fn = [e['finding'] for e in exs]
-    return {'vp': VP, 'vc': VC, 'pr': PR, 'y': Y, 'fid': FID, 'pid': PID, 'fn': Fn}
+    Ttxt = [e['temporal_text'] for e in exs]
+    return {
+        'vp': VP, 'vc': VC, 'pr': PR, 'y': Y, 'fid': FID, 'pid': PID,
+        'tt': TT, 'src': SRC, 'synth_id': TID, 'fn': Fn, 'ttxt': Ttxt,
+    }
 
-DATA = {sp: tensorize(examples[sp]) for sp in ['train', 'tune', 'test']}
+DATA = {sp: tensorize(examples[sp], TEMPORAL_TEXT_EMB[sp]) for sp in ['train', 'tune', 'test']}
 cnt = Counter(DATA['train']['y'].tolist()); tot = sum(cnt.values())
 W_cls = torch.tensor([tot / (3 * max(cnt[i], 1)) for i in range(3)], dtype=torch.float32)
 print('class weights (w/s/i):', [round(x, 3) for x in W_cls.tolist()])
 for sp in DATA:
-    print(sp, {k: (tuple(v.shape) if torch.is_tensor(v) else len(v)) for k, v in DATA[sp].items()})
+    shapes = {k: (tuple(v.shape) if torch.is_tensor(v) else len(v)) for k, v in DATA[sp].items()}
+    print(sp, shapes)
+print('train tt emb finite:', torch.isfinite(DATA['train']['tt']).all().item())

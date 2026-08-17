@@ -6,14 +6,14 @@ Implements the design in `docs/proposed_pipeline.png`:
 
 **What is new vs `train_ctclip_temporal_colab.ipynb` (current pipeline):**
 1. **Finding conditioning** inside the Difference Transformer (`e_diff <- e_diff + e_f`, or finding as a 4th token) so one pair produces many finding-specific `d_f`.
-2. **Masked same-finding SupCon** on `d_f` (not instance InfoNCE vs report text): positives = same finding + same direction; negatives = same finding + other direction; **other findings are ignored** (masked out).
+2. **Masked same-finding cross-modal SupCon** — image temporal rep `d_f` aligns to **frozen temporal-sentence embeddings** (dynamic/evidence text; synthetic stable templates only when needed). Positives = same finding + same direction texts; negatives = same finding + other direction; **other findings ignored**. Not instance CLIP InfoNCE; not `d`↔`d` only.
 3. **Separate contrastive temperature** `tau_con` (does not share CE `logit_scale`).
-4. **Contrastive-aware batching** (~K findings x 3 classes) so each batch has usable SupCon positives/negatives.
-5. **Ablation knobs:** CE | +mag | +SupCon · templates vs real text for prototypes · +/- finding conditioning.
+4. **Contrastive-aware batching** (~K findings × 3 classes) so each ba usable positives/negatives.
+5. **Ablation knobs:** CE | +mag | +text-SupCon · one-way vs symmetric · templates vs real prototypes · +/- finding conditioning.
 
 **Unchanged protocol:**
 - Frozen CT-CLIP image/text towers; only the Difference Transformer trains.
-- Hub `train_*` -> train + patient-held-out tune (early-stop on macro-F1); Hub `valid_*` -> **one** final test.
+- Hub `train_*` → train + patient-held-out tune (early-stop on macro-F1); Hub `valid_*` → **one** final test.
 - Inference: `argmax cos(d_f, PROTO[finding])` — **no report text** at test time.
 - Prefer `report_explicit` / tier=`explicit` silver labels.
 

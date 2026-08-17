@@ -5,3 +5,6 @@ Only this module is trained. CT-CLIP stays frozen.
 - Inputs: `v_prior`, `v_current`, `finding_id`
 - Conditioning: `e_diff <- e_diff + e_f` (default) or finding as 4th token
 - Output: `d_f` (512-d change emb for **this** finding on **this** pair) + optional `mag`
+-     }
+
+DATA = {sp: tensorize(examples[sp], TEMPORAL_TEXT_EMB(same-finding masked SupCon)

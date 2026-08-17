@@ -1,0 +1,78 @@
+# ---- stable template vs PROTO diagnostic ----
+print('=== Stable synthetic templates vs CE prototypes ===')
+rows = []
+for f in FINDINGS:
+    pr = F.normalize(PROTO[f].float(), dim=-1)
+    for tid, tmpl in enumerate(STABLE_SYNTH_TEMPLATES):
+        sent = tmpl.format(f=f.lower())
+        te = emb.embed_texts([sent], normalize=True).float().cpu()[0]
+        te = F.normalize(te, dim=-1)
+        cos = (pr @ te).tolist()
+        flag = ''
+        if cos[1] < cos[0] or cos[1] < cos[2]:
+            flag = 'WARN: stable tmpl closer to change class than stable proto'
+        rows.append(dict(
+            finding=f, tid=tid,
+            cos_w=cos[0], cos_s=cos[1], cos_i=cos[2],
+            flag=flag, text=sent,
+        ))
+
+f0 = FINDINGS[0]
+tvecs = emb.embed_texts(
+    [t.format(f=f0.lower()) for t in STABLE_SYNTH_TEMPLATES],
+    normalize=True,
+).float().cpu()
+tvecs = F.normalize(tvecs, dim=-1)
+pair = (tvecs @ tvecs.t()).numpy()
+print('pairwise cos among stable templates (finding=%r):' % (f0,))
+print(np.round(pair, 3))
+warn = [r for r in rows if r['flag']]
+print('template-proto rows: %d | warnings: %d' % (len(rows), len(warn)))
+for r in warn[:5]:
+    print(' ', r['finding'], 'tid', r['tid'],
+          'cos_w/s/i=%.3f/%.3f/%.3f' % (r['cos_w'], r['cos_s'], r['cos_i']),
+          r['flag'])
+
+_diag_path = f'{DRIVE}/ctclip_cache/stable_template_proto_diag.csv'
+try:
+    import csv as _csv
+    with open(_diag_path, 'w', newline='', encoding='utf-8') as f:
+        w = _csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    print('wrote', _diag_path)
+except Exception as e:
+    print('diag csv skip:', e)
+
+# ---- synthetic minibatch mask demo (2 findings x 3 classes) ----
+print('')
+print('=== Synthetic mask demo (2 findings x 3 classes) ===')
+_fid = torch.tensor([0, 0, 0, 1, 1, 1])
+_y = torch.tensor([0, 1, 2, 0, 1, 2])
+_d = F.normalize(torch.randn(6, 512), dim=-1)
+_t = F.normalize(_d + 0.1 * torch.randn_like(_d), dim=-1)
+
+same_f = _fid.unsqueeze(1).eq(_fid.unsqueeze(0))
+same_y = _y.unsqueeze(1).eq(_y.unsqueeze(0))
+pos_m = same_f & same_y
+neg_m = same_f & ~same_y
+ign_m = ~same_f
+print('fid:', _fid.tolist())
+print('y  :', _y.tolist())
+print('POS mask:')
+print(pos_m.int().numpy())
+print('NEG mask:')
+print(neg_m.int().numpy())
+print('IGN mask:')
+print(ign_m.int().numpy())
+
+assert pos_m[0].tolist() == [True, False, False, False, False, False]
+assert neg_m[0].tolist() == [False, True, True, False, False, False]
+assert ign_m[0].tolist() == [False, False, False, True, True, True]
+assert pos_m[0, 0] and pos_m[3, 3]
+
+loss_demo, st_demo = masked_crossmodal_supcon_loss(
+    _d, _t, _y, _fid, torch.tensor(0.07), symmetric=False)
+print('demo loss', float(loss_demo), 'stats', st_demo)
+assert st_demo['n_valid'] == 6
+print('MASK SANITY OK')

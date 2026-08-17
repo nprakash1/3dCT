@@ -1,0 +1,14 @@
+## 15. Loss ablation sweep — CE × Mag × SupCon
+
+Runs all loss combinations with a **fresh model** each time. Early-stops on **tune** macro-F1; scores Hub `valid_*` **once** per combo.
+
+| Flag | Meaning |
+|------|---------|
+| CE | Prototype cross-entropy (classification readout) |
+| Mag | Magnitude BCE (change vs stable) |
+| SupCon | Masked **cross-modal** SupCon: `d_f` ↔ frozen temporal-sentence emb |
+
+Defaults: skip `(0,0,0)`; set `QUICK_ABLATION=True` for CE-on only (4 runs).  
+Checkpoints + CSV → `Drive/.../ctclip_cache/ablations/`.
+
+**Requires:** `DATA[*]['tt']` and `masked_crossmodal_supcon_loss` (cells above).

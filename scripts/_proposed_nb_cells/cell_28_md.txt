@@ -1,0 +1,3 @@
+## 14. Diagnostics — stable templates vs CE prototypes + contrastive mask sanity
+
+Encode the synthetic stable bank and compare to each finding's CE prototypes. Then run a tiny synthetic batch that prints positive / negative / ignored masks for the cross-modal loss.

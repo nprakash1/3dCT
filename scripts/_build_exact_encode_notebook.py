@@ -34,10 +34,10 @@ cells = [
     markdown(r"""
 # CT-RATE → official EXACT Y-Mamba image encodings → Google Drive
 
-This notebook creates **EXACT image features at the same scale as the existing
-CT-CLIP cache**. It does **not** use CT-CLIP to encode images. The CT-CLIP cache is
-only read to obtain the exact set of already-processed `train_*` and `valid_*`
-volume names.
+This notebook creates **EXACT image features for the full 4,385-pair longitudinal
+CT-RATE cohort**. It does **not** use CT-CLIP to encode images. The CT-CLIP cache is
+read only for a coverage comparison; the target set is reconstructed from CT-RATE's
+official report and metadata CSVs.
 
 For each target volume it:
 
@@ -152,8 +152,8 @@ print('Imported official YMamba from:', sys.modules[YMamba.__module__].__file__)
     markdown(r"""
 ## 2. Mount Drive and configure paths
 
-The target inventory is `MyDrive/3dCT/ctclip_cache/img/*.pt`. EXACT results are kept
-separately under `MyDrive/3dCT/exact_cache/pooled/`.
+EXACT results are kept under `MyDrive/3dCT/exact_cache/pooled/`. If present,
+`MyDrive/3dCT/ctclip_cache/img/*.pt` is used only for a coverage comparison.
 
 The notebook automatically downloads the public official checkpoint to:
 
@@ -182,7 +182,7 @@ TMP = Path('/content/_exact_volume_tmp')
 for p in [EXACT_POOLED_DIR, EXACT_MANIFEST_DIR, CHECKPOINT_PATH.parent, TMP]:
     p.mkdir(parents=True, exist_ok=True)
 
-# Full-scale defaults. CT-CLIP determines the target set; there is no volume limit.
+# Full-scale defaults. The longitudinal manifest determines targets; there is no volume limit.
 PROCESS_VALID_FIRST = True
 SAVE_STAGE4_SPATIAL = False  # much larger cache; pooled 768-d is always saved
 USE_AMP = True
@@ -197,7 +197,6 @@ PREPROCESSING_ID = 'reconstructed_ctrate_canonical_resize64_hu-1000_1000_zero_on
 print('CT-CLIP inventory:', CTCLIP_IMG_DIR)
 print('EXACT output:', EXACT_CACHE)
 print('Checkpoint:', CHECKPOINT_PATH)
-assert CTCLIP_IMG_DIR.is_dir(), f'Missing CT-CLIP cache: {CTCLIP_IMG_DIR}'
 """),
     markdown(r"""
 ## 3. Official checkpoint
@@ -253,42 +252,175 @@ assert CHECKPOINT_PATH.stat().st_size >= MIN_CHECKPOINT_BYTES, (
 print(f'Official checkpoint present: {size_gb:.2f} GiB')
 """),
     markdown(r"""
-## 4. Enumerate exactly the volumes already cached by CT-CLIP
+## 4. Reconstruct the full longitudinal CT-RATE target set
 
-Only basenames beginning with `train_` or `valid_` are selected. Existing valid EXACT
-outputs are skipped, so the operation is safely resumable.
+The `valid_*` prefix denotes CT-RATE's source validation partition (3,039 reconstructed
+volumes), not the longitudinal validation examples. We reproduce the project's official
+report/metadata pairing procedure and select only the unique prior/current volumes needed
+by all 4,385 dated longitudinal pairs: 6,762 `train_*` and 429 `valid_*` volumes.
+
+This downloads only the four official CSVs (~101 MB), not any CT volume. The resulting
+compact pair and target manifests are saved to Drive. The CT-CLIP cache is audited for
+comparison but does not determine the EXACT target set.
 """),
     code(r"""
-def cache_key_to_volume(path):
-    return Path(path).stem + '.nii.gz'
+import csv
+from collections import defaultdict
+from datetime import datetime
+from huggingface_hub import login, hf_hub_download
 
-ctclip_files = sorted(CTCLIP_IMG_DIR.glob('*.pt'))
-train_targets = [cache_key_to_volume(p) for p in ctclip_files if p.stem.startswith('train_')]
-valid_targets = [cache_key_to_volume(p) for p in ctclip_files if p.stem.startswith('valid_')]
-unknown = [p.name for p in ctclip_files
-           if not (p.stem.startswith('train_') or p.stem.startswith('valid_'))]
+login()  # paste a Hugging Face READ token after accepting the CT-RATE terms
+HF_TOKEN = os.environ.get('HF_TOKEN') or True
+CTRATE_REPO = 'ibrahimhamamci/CT-RATE'
+CSV_CACHE = Path('/content/_ctrate_csv_cache')
+CSV_CACHE.mkdir(parents=True, exist_ok=True)
 
-assert train_targets, 'No train_* tensors found in the CT-CLIP cache.'
-assert valid_targets, 'No valid_* tensors found in the CT-CLIP cache.'
-assert not (set(train_targets) & set(valid_targets)), 'Train/valid target overlap.'
+REPORT_CSVS = [
+    'dataset/radiology_text_reports/train_reports.csv',
+    'dataset/radiology_text_reports/validation_reports.csv',
+]
+META_CSVS = [
+    'dataset/metadata/train_metadata.csv',
+    'dataset/metadata/validation_metadata.csv',
+]
+
+def fetch_csv(remote_path):
+    return hf_hub_download(
+        CTRATE_REPO, remote_path, repo_type='dataset', token=HF_TOKEN,
+        local_dir=str(CSV_CACHE), force_download=False)
+
+def parse_volume_name(volume):
+    base = volume.removesuffix('.nii.gz').removesuffix('.nii')
+    parts = base.split('_')
+    if len(parts) < 4:
+        return None
+    return parts[0], parts[1], parts[2], parts[3]  # split, patient, scan, reconstruction
+
+def parse_study_date(value):
+    value = (value or '').strip()
+    for fmt, width in (('%Y%m%d', 8), ('%Y-%m-%d', 10)):
+        try:
+            return datetime.strptime(value[:width], fmt)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+# Reports define the released volume inventory; metadata supplies real study dates.
+report_volumes = set()
+for remote_path in REPORT_CSVS:
+    with open(fetch_csv(remote_path), newline='', encoding='utf-8', errors='ignore') as f:
+        for row in csv.DictReader(f):
+            volume = (row.get('VolumeName') or '').strip()
+            if volume:
+                report_volumes.add(volume)
+
+study_dates = {}
+for remote_path in META_CSVS:
+    with open(fetch_csv(remote_path), newline='', encoding='utf-8', errors='ignore') as f:
+        for row in csv.DictReader(f):
+            volume = (row.get('VolumeName') or '').strip()
+            if volume:
+                study_dates[volume] = parse_study_date(row.get('StudyDate'))
+
+# One representative reconstruction per study: prefer one with a date, then the
+# lexicographically smallest volume name. This exactly mirrors 12_ctrate_enrich.py.
+studies = defaultdict(dict)
+for volume in report_volumes:
+    parsed = parse_volume_name(volume)
+    if parsed is None:
+        continue
+    split, patient_id, scan_id, _ = parsed
+    patient = f'{split}_{patient_id}'
+    candidate = {'volume': volume, 'date': study_dates.get(volume)}
+    current = studies[patient].get(scan_id)
+    if current is None:
+        studies[patient][scan_id] = candidate
+    else:
+        candidate_has_date = candidate['date'] is not None
+        current_has_date = current['date'] is not None
+        if ((candidate_has_date and not current_has_date) or
+            (candidate_has_date == current_has_date and volume < current['volume'])):
+            studies[patient][scan_id] = candidate
+
+pair_rows = []
+for patient, scan_map in studies.items():
+    if len(scan_map) < 2:
+        continue
+    ordered = sorted(
+        scan_map.items(),
+        key=lambda item: (item[1]['date'] or datetime.max, item[0]),
+    )
+    for (_, prior), (_, current) in zip(ordered, ordered[1:]):
+        if prior['date'] is None or current['date'] is None:
+            continue
+        delta_days = (current['date'] - prior['date']).days
+        if delta_days <= 0:
+            continue
+        pair_rows.append({
+            'patient': patient,
+            'prior_volume': prior['volume'],
+            'curr_volume': current['volume'],
+            'prior_date': prior['date'].strftime('%Y-%m-%d'),
+            'curr_date': current['date'].strftime('%Y-%m-%d'),
+            'delta_days': delta_days,
+        })
+
+pair_rows.sort(key=lambda row: (row['patient'], row['prior_date'], row['curr_date']))
+train_pairs = [row for row in pair_rows if row['patient'].startswith('train_')]
+valid_pairs = [row for row in pair_rows if row['patient'].startswith('valid_')]
+
+def unique_pair_volumes(rows):
+    return sorted({row[key] for row in rows for key in ('prior_volume', 'curr_volume')})
+
+train_targets = unique_pair_volumes(train_pairs)
+valid_targets = unique_pair_volumes(valid_pairs)
+
+EXPECTED_COUNTS = {
+    'pairs': 4385, 'train_pairs': 4125, 'valid_pairs': 260,
+    'train_volumes': 6762, 'valid_volumes': 429, 'total_volumes': 7191,
+}
+actual_counts = {
+    'pairs': len(pair_rows), 'train_pairs': len(train_pairs), 'valid_pairs': len(valid_pairs),
+    'train_volumes': len(train_targets), 'valid_volumes': len(valid_targets),
+    'total_volumes': len(set(train_targets) | set(valid_targets)),
+}
+assert actual_counts == EXPECTED_COUNTS, (
+    'Official CSVs no longer reproduce the reviewed longitudinal manifest. '
+    f'Expected {EXPECTED_COUNTS}, got {actual_counts}. Stop and audit upstream changes.')
+assert not (set(train_targets) & set(valid_targets)), 'Train/valid volume overlap.'
+
+pair_manifest_path = EXACT_MANIFEST_DIR / 'longitudinal_pairs.csv'
+with open(pair_manifest_path, 'w', newline='', encoding='utf-8') as f:
+    writer = csv.DictWriter(f, fieldnames=list(pair_rows[0]))
+    writer.writeheader()
+    writer.writerows(pair_rows)
+
+ctclip_cached = {p.stem + '.nii.gz' for p in CTCLIP_IMG_DIR.glob('*.pt')}
+required = set(train_targets) | set(valid_targets)
+ctclip_missing = sorted(required - ctclip_cached)
+ctclip_extra = sorted(ctclip_cached - required)
 
 targets_payload = {
     'created_unix': time.time(),
-    'source': str(CTCLIP_IMG_DIR),
-    'n_train': len(train_targets),
-    'n_valid': len(valid_targets),
-    'unknown_cache_files': unknown,
+    'source': REPORT_CSVS + META_CSVS,
+    'selection': 'dated consecutive longitudinal pairs, one reconstruction per study',
+    **actual_counts,
+    'ctclip_present': len(required & ctclip_cached),
+    'ctclip_missing': len(ctclip_missing),
+    'ctclip_extra': len(ctclip_extra),
     'train': train_targets,
     'valid': valid_targets,
+    'missing_from_ctclip_cache': ctclip_missing,
 }
 with open(EXACT_MANIFEST_DIR / 'target_volumes.json', 'w') as f:
     json.dump(targets_payload, f, indent=2)
 
-print('CT-CLIP-backed targets')
-print('  train:', len(train_targets))
-print('  valid:', len(valid_targets))
-print('  unknown:', len(unknown))
-print('  total:', len(train_targets) + len(valid_targets))
+print('Full longitudinal CT-RATE targets')
+print('  pairs:', len(pair_rows), '| train_*:', len(train_pairs), '| valid_*:', len(valid_pairs))
+print('  unique volumes:', len(required), '| train_*:', len(train_targets), '| valid_*:', len(valid_targets))
+print('CT-CLIP coverage:', len(required & ctclip_cached), 'present,',
+      len(ctclip_missing), 'missing,', len(ctclip_extra), 'unrelated cache entries')
+print('Saved pair manifest:', pair_manifest_path)
 """),
     markdown(r"""
 ## 5. Authenticate to gated CT-RATE and define disk-safe downloads
@@ -298,12 +430,6 @@ temporary directory that is completely removed after the encoding attempt, inclu
 Hugging Face's local metadata/cache files.
 """),
     code(r"""
-from huggingface_hub import login, hf_hub_download
-
-login()  # paste a Hugging Face READ token with CT-RATE access
-HF_TOKEN = os.environ.get('HF_TOKEN') or True
-CTRATE_REPO = 'ibrahimhamamci/CT-RATE'
-
 def remote_candidates(volume):
     base = volume.removesuffix('.nii.gz').removesuffix('.nii')
     split, patient_id, scan = base.split('_')[:3]
@@ -597,10 +723,10 @@ validated and skipped.
 valid_summary = encode_targets(valid_targets, 'valid')
 """),
     markdown(r"""
-## 11. Encode every training target already present in the CT-CLIP cache
+## 11. Encode every longitudinal `train_*` target
 
-This can take many Colab sessions. It does not enumerate the entire CT-RATE training
-split—it exactly follows the existing CT-CLIP cache inventory.
+This can take many Colab sessions. It encodes the 6,762 unique `train_*` volumes used by
+the dated longitudinal pairs, not the entire CT-RATE training partition.
 """),
     code(r"""
 train_summary = encode_targets(train_targets, 'train')
@@ -608,7 +734,7 @@ train_summary = encode_targets(train_targets, 'train')
     markdown(r"""
 ## 12. Final one-to-one coverage audit
 
-The audit checks every CT-CLIP-backed target, validates each EXACT payload, and writes a
+The audit checks every longitudinal target, validates each EXACT payload, and writes a
 machine-readable report to Drive.
 """),
     code(r"""

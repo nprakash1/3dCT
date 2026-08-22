@@ -267,10 +267,20 @@ comparison but does not determine the EXACT target set.
 import csv
 from collections import defaultdict
 from datetime import datetime
-from huggingface_hub import login, hf_hub_download
+from huggingface_hub import get_token, login, hf_hub_download
 
 login()  # paste a Hugging Face READ token after accepting the CT-RATE terms
-HF_TOKEN = os.environ.get('HF_TOKEN') or True
+raw_hf_token = os.environ.get('HF_TOKEN') or get_token()
+assert raw_hf_token, 'No Hugging Face token found after login().'
+HF_TOKEN = ''.join(str(raw_hf_token).split())  # removes pasted U+2007 and all whitespace
+try:
+    HF_TOKEN.encode('ascii')
+except UnicodeEncodeError as exc:
+    bad = sorted({f'U+{ord(ch):04X}' for ch in HF_TOKEN if ord(ch) > 127})
+    raise ValueError(f'Hugging Face token contains non-ASCII characters: {bad}') from exc
+assert HF_TOKEN.startswith('hf_'), 'Hugging Face token must start with hf_.'
+os.environ['HF_TOKEN'] = HF_TOKEN
+print('Hugging Face token sanitized:', HF_TOKEN[:5] + '…' + HF_TOKEN[-4:])
 CTRATE_REPO = 'ibrahimhamamci/CT-RATE'
 CSV_CACHE = Path('/content/_ctrate_csv_cache')
 CSV_CACHE.mkdir(parents=True, exist_ok=True)
@@ -431,8 +441,13 @@ Hugging Face's local metadata/cache files.
 """),
     code(r"""
 def remote_candidates(volume):
+    volume = str(volume).strip()
+    volume.encode('ascii')
     base = volume.removesuffix('.nii.gz').removesuffix('.nii')
-    split, patient_id, scan = base.split('_')[:3]
+    parts = base.split('_')
+    if len(parts) < 4:
+        raise ValueError(f'Unexpected CT-RATE volume name: {volume!r}')
+    split, patient_id, scan = parts[:3]
     patient = f'{split}_{patient_id}'
     scan_folder = f'{split}_{patient_id}_{scan}'
     folders = [f'{split}_fixed', split] if split in {'train', 'valid'} else [split]
@@ -451,8 +466,10 @@ def download_volume(volume):
                 CTRATE_REPO, remote_path, repo_type='dataset', token=HF_TOKEN,
                 local_dir=str(TMP), force_download=False)
         except Exception as exc:
-            errors.append(f'{remote_path}: {type(exc).__name__}')
-    print('DOWNLOAD FAIL', volume, '|', ' ; '.join(errors))
+            errors.append(f'{remote_path}: {type(exc).__name__}: {exc}')
+    print('DOWNLOAD FAIL', volume)
+    for error in errors:
+        print(' ', error)
     return None
 
 print('Example candidates:', remote_candidates(valid_targets[0]))
@@ -527,7 +544,9 @@ model = YMamba(
     depths=[2, 2, 2, 2], feat_size=[48, 96, 192, 384], hidden_size=768,
 ).to(DEVICE)
 
-checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu')
+# PyTorch 2.6 defaults to weights_only=True. The official EXACT checkpoint contains
+# NumPy scalar metadata, so explicitly use the legacy loader for this trusted file.
+checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=False)
 if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
     state = checkpoint['model_state_dict']
 elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
@@ -605,7 +624,7 @@ def output_path(volume):
 def valid_existing(path):
     if not path.exists(): return False
     try:
-        payload = torch.load(path, map_location='cpu')
+        payload = torch.load(path, map_location='cpu', weights_only=True)
         vector = payload['pooled_encoder5']
         return (
             tuple(vector.shape) == (768,) and torch.isfinite(vector).all().item()
@@ -624,7 +643,7 @@ def atomic_torch_save(payload, destination):
     torch.save(payload, temporary)
     os.replace(temporary, destination)
 
-def encode_targets(volumes, split):
+def encode_targets(volumes, split, *, raise_on_error=False):
     progress_path = EXACT_CACHE / f'progress_{split}.json'
     new = skipped = missing = failed = 0
     for i, volume in enumerate(tqdm(volumes, desc=f'EXACT {split}')):
@@ -642,6 +661,8 @@ def encode_targets(volumes, split):
                 'time': time.time(), 'split': split, 'volume': volume,
                 'kind': 'download_missing'})
             reset_tmp()
+            if raise_on_error:
+                raise RuntimeError(f'Download failed for smoke-test volume: {volume}')
             continue
 
         started = time.time()
@@ -680,6 +701,8 @@ def encode_targets(volumes, split):
                 'time': time.time(), 'split': split, 'volume': volume,
                 'kind': 'encode_failure', 'error_type': type(exc).__name__,
                 'error': str(exc)})
+            if raise_on_error:
+                raise
         finally:
             reset_tmp()
             gc.collect()
@@ -705,9 +728,11 @@ This performs a real Hugging Face download and official Y-Mamba forward pass bef
 large run. It writes the first valid result to the same resumable cache.
 """),
     code(r"""
-smoke_summary = encode_targets(valid_targets[:1], 'valid_smoke')
-assert valid_existing(output_path(valid_targets[0])), 'Smoke-test output is invalid.'
-smoke = torch.load(output_path(valid_targets[0]), map_location='cpu')
+smoke_volume = valid_targets[0]
+smoke_summary = encode_targets([smoke_volume], 'valid_smoke', raise_on_error=True)
+smoke_path = output_path(smoke_volume)
+assert valid_existing(smoke_path), f'Smoke-test output is invalid: {smoke_path}'
+smoke = torch.load(smoke_path, map_location='cpu', weights_only=True)
 print('Smoke volume:', smoke['volume'])
 print('Stage shapes:', smoke['stage_shapes'])
 print('encoder5:', smoke['encoder5_shape'])

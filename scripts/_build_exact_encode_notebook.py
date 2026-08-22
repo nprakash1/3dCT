@@ -81,18 +81,68 @@ assert torch.cuda.is_available(), 'A CUDA GPU is required for full-scale EXACT e
     markdown(r"""
 ## 1. Install the official EXACT foundation-model environment
 
-The repository vendors its Mamba package. Installation can take several minutes because
-CUDA extensions may compile. If Colab replaces PyTorch or asks for a restart, restart the
-runtime once and rerun from the top.
+EXACT documents PyTorch 2.4.1 + CUDA 12.1. Current Colab images may ship a newer,
+binary-incompatible PyTorch. The first cell pins the documented stack and **automatically
+restarts the runtime once** if a change was required. After the disconnect, choose
+**Runtime → Run all** again.
+
+The second cell downloads matching prebuilt CUDA wheels directly. It never attempts to
+compile Mamba from source.
 """),
     code(r"""
+# Pin EXACT's documented PyTorch stack. This cell deliberately restarts once when needed.
+import os, subprocess, sys, torch
+
+EXPECTED_TORCH = '2.4.1'
+if torch.__version__.split('+')[0] != EXPECTED_TORCH:
+    print('Current torch:', torch.__version__)
+    print('Installing EXACT-compatible torch 2.4.1/cu121; runtime will restart once...', flush=True)
+    subprocess.run([
+        sys.executable, '-m', 'pip', 'install', '-q', '--upgrade', '--force-reinstall',
+        'torch==2.4.1', 'torchvision==0.19.1', 'torchaudio==2.4.1',
+        '--index-url', 'https://download.pytorch.org/whl/cu121'
+    ], check=True)
+    print('Install complete. Restarting now; then use Runtime > Run all.', flush=True)
+    os.kill(os.getpid(), 9)
+
+print('Compatible torch already active:', torch.__version__, '| CUDA:', torch.version.cuda)
+"""),
+    code(r"""
+# Install binary-compatible prebuilt Mamba wheels (no local CUDA compilation).
 %cd /content
 ![ -d EXACT/.git ] || git clone --depth 1 https://github.com/JasonW375/EXACT.git EXACT
-!pip install -q ninja packaging huggingface_hub nibabel scipy tqdm gdown
-!pip install -q monai==1.3.0
-!pip install -q --no-build-isolation mamba-ssm==2.2.4
 
-import os, sys
+import os, subprocess, sys, torch
+from pathlib import Path
+
+assert torch.__version__.split('+')[0] == '2.4.1', (
+    'Torch pin is not active. Rerun from the top after the automatic restart.')
+assert sys.version_info[:2] in {(3, 10), (3, 11), (3, 12)}, sys.version
+
+subprocess.run([
+    sys.executable, '-m', 'pip', 'install', '-q',
+    'ninja', 'packaging', 'einops==0.8.0', 'transformers',
+    'huggingface_hub', 'nibabel==5.3.2', 'scipy', 'tqdm', 'gdown', 'monai==1.3.0'
+], check=True)
+
+py_tag = f'cp{sys.version_info.major}{sys.version_info.minor}'
+abi = 'TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE'
+platform_tag = 'linux_x86_64'
+causal_name = f'causal_conv1d-1.4.0+cu122torch2.4cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
+mamba_name = f'mamba_ssm-2.2.4+cu12torch2.4cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
+causal_url = 'https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/' + causal_name.replace('+', '%2B')
+mamba_url = 'https://github.com/state-spaces/mamba/releases/download/v2.2.4/' + mamba_name.replace('+', '%2B')
+
+print('Python tag:', py_tag, '| CXX11 ABI:', abi)
+print('Installing prebuilt causal-conv1d wheel:', causal_name)
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps', causal_url], check=True)
+print('Installing prebuilt mamba-ssm wheel:', mamba_name)
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps', mamba_url], check=True)
+
+import causal_conv1d, mamba_ssm
+print('causal_conv1d:', causal_conv1d.__version__)
+print('mamba_ssm:', mamba_ssm.__version__)
+
 EXACT_ROOT = '/content/EXACT'
 EXACT_PRETRAIN = os.path.join(EXACT_ROOT, 'EXACT_Pretrain')
 if EXACT_PRETRAIN not in sys.path:

@@ -185,7 +185,9 @@ for p in [EXACT_POOLED_DIR, EXACT_MANIFEST_DIR, CHECKPOINT_PATH.parent, TMP]:
 # Full-scale defaults. The longitudinal manifest determines targets; there is no volume limit.
 PROCESS_VALID_FIRST = True
 SAVE_STAGE4_SPATIAL = False  # much larger cache; pooled 768-d is always saved
-USE_AMP = True
+# FP16 autocast can produce non-finite Y-Mamba activations on CT-RATE inputs under
+# PyTorch 2.6. Use stable FP32 inference; the final cached vector is still stored as FP16.
+USE_AMP = False
 
 # Reconstructed raw-NIfTI preprocessing. The missing official scripts prevent a
 # bit-exact claim. Keep these fixed across all volumes in an experiment.
@@ -581,18 +583,26 @@ print('checkpoint SHA256:', CHECKPOINT_SHA256)
 
 @torch.inference_mode()
 def encode_exact(x_cpu):
-    x = x_cpu.to(DEVICE, non_blocking=True)
-    amp_dtype = torch.float16
-    with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=USE_AMP):
+    x = x_cpu.to(DEVICE, dtype=torch.float32, non_blocking=True)
+    # Keep the official Y-Mamba forward pass in FP32. FP16 autocast was observed to
+    # generate inf/NaN pooled features in the supported Colab PyTorch 2.6 runtime.
+    with torch.autocast(device_type='cuda', enabled=False):
         stages = model.vit(x)
+        for index, stage in enumerate(stages, start=1):
+            if not torch.isfinite(stage).all():
+                raise FloatingPointError(
+                    f'Non-finite values in Y-Mamba encoder stage {index} during FP32 inference.')
         hidden = model.encoder5(stages[3])
+        if not torch.isfinite(hidden).all():
+            raise FloatingPointError('Non-finite values in Y-Mamba encoder5 during FP32 inference.')
         pooled = hidden.mean(dim=(2, 3, 4))
     expected_channels = [48, 96, 192, 384]
     assert len(stages) == 4
     assert [int(t.shape[1]) for t in stages] == expected_channels
     assert hidden.ndim == 5 and hidden.shape[1] == 768
     assert pooled.shape == (x.shape[0], 768)
-    assert torch.isfinite(pooled).all()
+    if not torch.isfinite(pooled).all():
+        raise FloatingPointError('Non-finite pooled Y-Mamba features during FP32 inference.')
     result = {
         'pooled_encoder5': pooled.float().cpu(),
         'stage_shapes': [tuple(int(v) for v in t.shape) for t in stages],

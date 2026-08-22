@@ -66,46 +66,46 @@ making the reconstructed NIfTI preprocessing explicit and recording it in every 
 Do not describe preprocessing as bit-exact to the paper unless the authors provide the
 missing scripts.
 
-**Runtime:** use an NVIDIA GPU. A100/L4 (24 GB+) is recommended. The official stack
-uses PyTorch 2.4.1 + CUDA 12.1 and `mamba-ssm==2.2.4`.
+**Required Colab runtime:** before running any cell, open **Runtime → Change runtime
+type**, select an NVIDIA GPU, and set **Runtime Version → 2025.07**. That past runtime
+provides Python 3.11 and PyTorch 2.6, for which matching prebuilt Mamba CUDA wheels exist.
+A100/L4 (24 GB+) is recommended.
 """),
     code(r"""
-# GPU/runtime check
+# GPU/runtime check. PyTorch 2.4.1 has no Python 3.13 wheel, so it cannot be installed
+# into the current default Colab runtime. Use Colab's 2025.07 past runtime instead.
 !nvidia-smi || echo 'NO GPU — Runtime > Change runtime type > GPU'
-import platform, torch
+import platform, sys, torch
 print('python:', platform.python_version())
 print('torch:', torch.__version__, '| CUDA:', torch.version.cuda,
       '| available:', torch.cuda.is_available())
+assert sys.version_info[:2] == (3, 11) and torch.__version__.split('+')[0] == '2.6.0', (
+    f'Unsupported Colab image: Python {platform.python_version()}, torch {torch.__version__}.\n'
+    'Do not try to pip-install torch 2.4.1 under Python 3.13; no such wheel exists.\n'
+    'Select Runtime > Change runtime type > Runtime Version > 2025.07, choose a GPU, '
+    'save, and then use Runtime > Run all.'
+)
 assert torch.cuda.is_available(), 'A CUDA GPU is required for full-scale EXACT encoding.'
 """),
     markdown(r"""
 ## 1. Install the official EXACT foundation-model environment
 
-EXACT documents PyTorch 2.4.1 + CUDA 12.1. Current Colab images may ship a newer,
-binary-incompatible PyTorch. The first cell pins the documented stack and **automatically
-restarts the runtime once** if a change was required. After the disconnect, choose
-**Runtime → Run all** again.
+EXACT documents PyTorch 2.4.1 + CUDA 12.1, but that PyTorch release has no Python 3.13
+wheel. The current default Colab runtime therefore cannot be repaired by pip-downgrading
+PyTorch. This notebook uses Colab's **2025.07 past runtime** (Python 3.11 / PyTorch 2.6)
+and downloads matching prebuilt CUDA wheels directly. It never compiles Mamba from source.
 
-The second cell downloads matching prebuilt CUDA wheels directly. It never attempts to
-compile Mamba from source.
+Colab keeps past runtime versions for one year. If `2025.07` is no longer offered, stop:
+the wheel matrix below must be updated and smoke-tested for a newer runtime rather than
+silently compiling or mixing binary-incompatible packages.
 """),
     code(r"""
-# Pin EXACT's documented PyTorch stack. This cell deliberately restarts once when needed.
-import os, subprocess, sys, torch
-
-EXPECTED_TORCH = '2.4.1'
-if torch.__version__.split('+')[0] != EXPECTED_TORCH:
-    print('Current torch:', torch.__version__)
-    print('Installing EXACT-compatible torch 2.4.1/cu121; runtime will restart once...', flush=True)
-    subprocess.run([
-        sys.executable, '-m', 'pip', 'install', '-q', '--upgrade', '--force-reinstall',
-        'torch==2.4.1', 'torchvision==0.19.1', 'torchaudio==2.4.1',
-        '--index-url', 'https://download.pytorch.org/whl/cu121'
-    ], check=True)
-    print('Install complete. Restarting now; then use Runtime > Run all.', flush=True)
-    os.kill(os.getpid(), 9)
-
-print('Compatible torch already active:', torch.__version__, '| CUDA:', torch.version.cuda)
+# Deliberately do not replace Colab's core PyTorch package. Compiled extension wheels
+# below are selected for the 2025.07 runtime's Python and PyTorch versions.
+import platform, sys, torch
+assert sys.version_info[:2] == (3, 11), platform.python_version()
+assert torch.__version__.split('+')[0] == '2.6.0', torch.__version__
+print('Supported base runtime:', platform.python_version(), torch.__version__, torch.version.cuda)
 """),
     code(r"""
 # Install binary-compatible prebuilt Mamba wheels (no local CUDA compilation).
@@ -115,9 +115,8 @@ print('Compatible torch already active:', torch.__version__, '| CUDA:', torch.ve
 import os, subprocess, sys, torch
 from pathlib import Path
 
-assert torch.__version__.split('+')[0] == '2.4.1', (
-    'Torch pin is not active. Rerun from the top after the automatic restart.')
-assert sys.version_info[:2] in {(3, 10), (3, 11), (3, 12)}, sys.version
+assert torch.__version__.split('+')[0] == '2.6.0', 'Select Colab Runtime Version 2025.07.'
+assert sys.version_info[:2] == (3, 11), 'Select Colab Runtime Version 2025.07.'
 
 subprocess.run([
     sys.executable, '-m', 'pip', 'install', '-q',
@@ -128,9 +127,9 @@ subprocess.run([
 py_tag = f'cp{sys.version_info.major}{sys.version_info.minor}'
 abi = 'TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE'
 platform_tag = 'linux_x86_64'
-causal_name = f'causal_conv1d-1.4.0+cu122torch2.4cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
-mamba_name = f'mamba_ssm-2.2.4+cu12torch2.4cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
-causal_url = 'https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.4.0/' + causal_name.replace('+', '%2B')
+causal_name = f'causal_conv1d-1.5.0.post8+cu12torch2.6cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
+mamba_name = f'mamba_ssm-2.2.4+cu12torch2.6cxx11abi{abi}-{py_tag}-{py_tag}-{platform_tag}.whl'
+causal_url = 'https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.0.post8/' + causal_name.replace('+', '%2B')
 mamba_url = 'https://github.com/state-spaces/mamba/releases/download/v2.2.4/' + mamba_name.replace('+', '%2B')
 
 print('Python tag:', py_tag, '| CXX11 ABI:', abi)

@@ -155,11 +155,13 @@ print('Imported official YMamba from:', sys.modules[YMamba.__module__].__file__)
 The target inventory is `MyDrive/3dCT/ctclip_cache/img/*.pt`. EXACT results are kept
 separately under `MyDrive/3dCT/exact_cache/pooled/`.
 
-Place the official checkpoint at:
+The notebook automatically downloads the public official checkpoint to:
 
 `MyDrive/3dCT/exact_weights/ymamba_pretrain_best.pth`
 
-Official checkpoint folder: https://drive.google.com/drive/folders/1i2J6XUqTm2G8m3-OlbH7Wt00aBxIpClf
+If automatic downloading is blocked by Google Drive quota, manually download
+`01_pretrain/ymamba_pretrain_best.pth` from the official folder and place it there:
+https://drive.google.com/drive/folders/1i2J6XUqTm2G8m3-OlbH7Wt00aBxIpClf
 """),
     code(r"""
 from google.colab import drive
@@ -200,20 +202,51 @@ assert CTCLIP_IMG_DIR.is_dir(), f'Missing CT-CLIP cache: {CTCLIP_IMG_DIR}'
     markdown(r"""
 ## 3. Official checkpoint
 
-The authors publish the checkpoint inside a shared ~6.3 GB Drive folder rather than a
-direct model URL. Download only `01_pretrain/ymamba_pretrain_best.pth` from the official
-folder and put it at `CHECKPOINT_PATH` above. The notebook refuses to run with a missing
-or suspiciously small file.
+The authors publish the checkpoint in a public Google Drive folder. This cell downloads
+only `01_pretrain/ymamba_pretrain_best.pth` (published size: 998.2 MB) and persists it to
+your Drive. It stages the download locally and uses a `.part` destination so an interrupted
+copy is never mistaken for a valid checkpoint. Existing valid files are reused.
 """),
     code(r"""
+import gdown
+
+CHECKPOINT_FILE_ID = '1j6YyW1pvOGymck4OVJsxSfNrtFivXlFE'
 MIN_CHECKPOINT_BYTES = 800 * 1024 * 1024
-if not CHECKPOINT_PATH.exists():
-    raise FileNotFoundError(
-        f'Official EXACT checkpoint not found at {CHECKPOINT_PATH}.\n'
-        'Download 01_pretrain/ymamba_pretrain_best.pth from:\n'
-        'https://drive.google.com/drive/folders/1i2J6XUqTm2G8m3-OlbH7Wt00aBxIpClf\n'
-        'and copy it to the path above.'
-    )
+checkpoint_ok = CHECKPOINT_PATH.exists() and CHECKPOINT_PATH.stat().st_size >= MIN_CHECKPOINT_BYTES
+
+if not checkpoint_ok:
+    local_download = TMP / 'ymamba_pretrain_best.pth.download'
+    drive_partial = CHECKPOINT_PATH.with_suffix(CHECKPOINT_PATH.suffix + '.part')
+    local_download.unlink(missing_ok=True)
+    drive_partial.unlink(missing_ok=True)
+
+    print('Downloading the official 998.2 MB EXACT checkpoint...')
+    try:
+        result = gdown.download(id=CHECKPOINT_FILE_ID, output=str(local_download), quiet=False)
+        if result is None or not local_download.exists():
+            raise RuntimeError('gdown did not produce a checkpoint file.')
+        downloaded_bytes = local_download.stat().st_size
+        if downloaded_bytes < MIN_CHECKPOINT_BYTES:
+            raise RuntimeError(
+                f'Download is only {downloaded_bytes / 1024**2:.1f} MiB; expected about 998.2 MB. '
+                'Google Drive may have returned a quota or access page.')
+
+        print('Copying validated download to Google Drive...')
+        shutil.copyfile(local_download, drive_partial)
+        if drive_partial.stat().st_size != downloaded_bytes:
+            raise IOError('Drive copy size does not match the local download.')
+        drive_partial.replace(CHECKPOINT_PATH)
+    except Exception as exc:
+        drive_partial.unlink(missing_ok=True)
+        raise RuntimeError(
+            'Automatic checkpoint download failed. Manually download '
+            '01_pretrain/ymamba_pretrain_best.pth from:\n'
+            'https://drive.google.com/drive/folders/1I5OHU0_QMpxqRMPNyxjeYPSZjDpRhuRH\n'
+            f'and place it at {CHECKPOINT_PATH}. Original error: {exc}'
+        ) from exc
+    finally:
+        local_download.unlink(missing_ok=True)
+
 size_gb = CHECKPOINT_PATH.stat().st_size / 1024**3
 assert CHECKPOINT_PATH.stat().st_size >= MIN_CHECKPOINT_BYTES, (
     f'Checkpoint is unexpectedly small ({size_gb:.2f} GiB): {CHECKPOINT_PATH}')
